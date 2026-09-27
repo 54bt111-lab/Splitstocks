@@ -1,6 +1,7 @@
 import os
 import sys
 import datetime
+import re
 import requests
 from collections import defaultdict
 
@@ -29,8 +30,69 @@ def send_telegram_message(message):
         print(f"❌ خطأ أثناء إرسال تلجرام: {e}")
         return False
 
+def get_upcoming_splits_web():
+    """جلب التقسيمات العكسية القادمة من المصادر العامة للتغلب على قيود FMP المجاني."""
+    print("🌐 جلب التقسيمات القادمة من المصادر العامة...")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    splits_list = []
+    
+    try:
+        url = "https://stockanalysis.com/actions/splits/"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            html = response.text
+            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
+            for row in rows:
+                cols = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+                if len(cols) >= 4:
+                    date_str = re.sub(r'<[^>]+>', '', cols[0]).strip()
+                    symbol_str = re.sub(r'<[^>]+>', '', cols[1]).strip()
+                    ratio_str = re.sub(r'<[^>]+>', '', cols[3]).strip() if len(cols) > 3 else ""
+                    
+                    if symbol_str and ("for" in ratio_str.lower() or ":" in ratio_str or "1-" in ratio_str):
+                        symbol = symbol_str.split()[0].upper()
+                        splits_list.append({
+                            'symbol': symbol,
+                            'date': date_str,
+                            'ratio': ratio_str
+                        })
+    except Exception as e:
+        print(f"⚠️ تعذر جلب التقسيمات من المصدر العام: {e}")
+
+    return splits_list
+
+def get_fmp_calendar_splits():
+    """محاولة جلب التقسيمات من FMP كخيار ثانوي."""
+    if not FMP_API_KEY:
+        return []
+    
+    start_date = datetime.date.today()
+    end_date = start_date + datetime.timedelta(days=7)
+    calendar_url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={start_date}&to={end_date}&apikey={FMP_API_KEY}"
+    
+    try:
+        res = requests.get(calendar_url, timeout=10).json()
+        if isinstance(res, list):
+            fmp_splits = []
+            for item in res:
+                num = item.get('numerator', 1)
+                den = item.get('denominator', 1)
+                if num < den:
+                    fmp_splits.append({
+                        'symbol': item.get('symbol'),
+                        'date': item.get('date'),
+                        'ratio': f"{num}:{den}"
+                    })
+            return fmp_splits
+    except Exception as e:
+        print(f"⚠️ خطأ FMP Calendar: {e}")
+    return []
+
 def get_stock_details(ticker):
-    """جلب التفاصيل الحالية للشركة والتاريخ وفحص أسهم البيني."""
+    """جلب التفاصيل الحالية للشركة والتاريخ وفحص أسهم البيني عبر FMP."""
     if not FMP_API_KEY:
         return {'price': 0.0, 'shares': 0, 'has_prior_splits': False, 'prior_splits_count': 0, 'is_penny': False}
         
@@ -50,8 +112,6 @@ def get_stock_details(ticker):
         historical_splits = hist_res.get('historical', []) if isinstance(hist_res, dict) else []
         
         reverse_splits = [s for s in historical_splits if s.get('numerator', 1) < s.get('denominator', 1)]
-        
-        # تصنيف السهم كـ Penny Stock إذا كان سعره أقل من 5 دولار
         is_penny = (0 < price < 5.0)
         
         return {
@@ -66,67 +126,56 @@ def get_stock_details(ticker):
         return {'price': 0.0, 'shares': 0, 'has_prior_splits': False, 'prior_splits_count': 0, 'is_penny': False}
 
 def run_weekly_check():
-    """تشغيل الفحص الأسبوعي وتجميع النتائج مقسمة بحسب الأيام ومحددة للبيني ستوك."""
+    """تشغيل الفحص الأسبوعي وتجميع نتائج التقسيم العكسي."""
     print("🔍 بدء عملية الفحص الأسبوعي للأسهم...")
     
-    if not FMP_API_KEY:
-        print("❌ FMP_API_KEY غير موجود في Secrets!")
-        sys.exit(1)
-
-    # نطاق الأسبوع الممتد من اليوم
-    start_date = datetime.date.today()
-    end_date = start_date + datetime.timedelta(days=7)
+    # دمج التقسيمات من المصدر العام و FMP
+    web_splits = get_upcoming_splits_web()
+    fmp_splits = get_fmp_calendar_splits()
     
-    calendar_url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={start_date}&to={end_date}&apikey={FMP_API_KEY}"
-    
-    try:
-        splits_data = requests.get(calendar_url, timeout=15).json()
-    except Exception as e:
-        print(f"❌ خطأ في الاتصال بالـ API: {e}")
-        sys.exit(1)
+    combined_splits = {}
+    for item in web_splits + fmp_splits:
+        symbol = item['symbol']
+        if symbol not in combined_splits:
+            combined_splits[symbol] = item
 
-    if not isinstance(splits_data, list) or len(splits_data) == 0:
+    if not combined_splits:
+        start_date = datetime.date.today()
+        end_date = start_date + datetime.timedelta(days=7)
         send_telegram_message(f"ℹ️ لا توجد تقسيمات معلنة للأسبوع القادم (من {start_date} إلى {end_date}).")
         return
 
-    splits_data = sorted(splits_data, key=lambda x: x.get('date', ''))
     grouped_splits = defaultdict(list)
 
-    for item in splits_data:
-        ticker = item.get('symbol')
-        target_date = item.get('date')
-        num = item.get('numerator', 1)
-        den = item.get('denominator', 1)
+    for symbol, item in combined_splits.items():
+        target_date = item.get('date', 'غير محدد')
+        ratio_str = item.get('ratio', 'غير محدد')
         
-        # التقسيم العكسي (البسط أقل من المقام)
-        if num < den:
-            details = get_stock_details(ticker)
-            ratio_str = f"{num}:{den}"
-            has_split_before = "نعم" if details['has_prior_splits'] else "لا"
-            penny_tag = "🪙 <b>نوع السهم:</b> بني ستوك (أقل من $5)\n   " if details['is_penny'] else ""
-            
-            stock_info = (
-                f"🔹 <b>الرمز:</b> ${ticker}\n"
-                f"   ⚖️ <b>النسبة:</b> {ratio_str}\n"
-                f"   💵 <b>السعر الحالي:</b> ${details['price']:.2f}\n"
-                f"   📊 <b>عدد الأسهم:</b> {details['shares']:,.0f}\n"
-                f"   {penny_tag}"
-                f"🔄 <b>تقسيم سابق:</b> {has_split_before} ({details['prior_splits_count']} مرة)"
-            )
-            grouped_splits[target_date].append(stock_info)
+        details = get_stock_details(symbol)
+        has_split_before = "نعم" if details['has_prior_splits'] else "لا"
+        penny_tag = "🪙 <b>نوع السهم:</b> بني ستوك (أقل من $5)\n   " if details['is_penny'] else ""
+        
+        stock_info = (
+            f"🔹 <b>الرمز:</b> ${symbol}\n"
+            f"   ⚖️ <b>النسبة:</b> {ratio_str}\n"
+            f"   💵 <b>السعر الحالي:</b> ${details['price']:.2f}\n"
+            f"   📊 <b>عدد الأسهم:</b> {details['shares']:,.0f}\n"
+            f"   {penny_tag}"
+            f"🔄 <b>تقسيم سابق:</b> {has_split_before} ({details['prior_splits_count']} مرة)"
+        )
+        grouped_splits[target_date].append(stock_info)
 
-    header = f"📊 <b>جدول التقسيمات العكسية للأسبوع (شامل أسهم البيني)</b>\n🗓️ الفترة: من <code>{start_date}</code> إلى <code>{end_date}</code>\n"
+    start_date = datetime.date.today()
+    end_date = start_date + datetime.timedelta(days=7)
+    header = f"📊 <b>جدول التقسيمات العكسية للأسبوع</b>\n🗓️ الفترة: من <code>{start_date}</code> إلى <code>{end_date}</code>\n"
     
-    if not grouped_splits:
-        final_message = header + "\nℹ️ لا توجد أسهم معلنة للتقسيم العكسي خلال الأيام السبعة القادمة."
-    else:
-        sections = []
-        for split_date, stocks in grouped_splits.items():
-            day_header = f"📅 <b><u>يوم {split_date}</u></b> ({len(stocks)} أسهم):"
-            stocks_list = "\n\n".join(stocks)
-            sections.append(f"{day_header}\n{stocks_list}")
-        
-        final_message = header + "\n" + "\n───────────────\n".join(sections)
+    sections = []
+    for split_date, stocks in sorted(grouped_splits.items()):
+        day_header = f"📅 <b><u>تاريخ {split_date}</u></b> ({len(stocks)} أسهم):"
+        stocks_list = "\n\n".join(stocks)
+        sections.append(f"{day_header}\n{stocks_list}")
+    
+    final_message = header + "\n" + "\n───────────────\n".join(sections)
 
     print(final_message)
     send_telegram_message(final_message)
