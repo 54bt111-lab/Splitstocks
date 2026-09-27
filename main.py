@@ -1,121 +1,26 @@
-name: Reverse Split Bot Runner
-import os
-import sys
-import requests
-from datetime import datetime, timedelta
-def send_telegram_message(bot_token, chat_id, text):
-"""إرسال رسالة إلى تلجرام عبر Bot API"""
-url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-payload = {
-"chat_id": chat_id,
-"text": text,
-"parse_mode": "HTML",
-"disable_web_page_preview": True
-}
-try:
-response = requests.post(url, json=payload, timeout=10)
-response.raise_for_status()
-print("✅ تم إرسال التقرير إلى تلجرام بنجاح.")
-except Exception as e:
-print(f"❌ خطأ أثناء إرسال الرسالة إلى تلجرام: {e}")
-def fetch_stock_splits(api_key, start_date, end_date):
-"""جلب جدول تقسيمات الأسهم من API"""
-url = "https://financialmodelingprep.com/api/v3/stock_split_calendar"
-params = {
-"from": start_date,
-"to": end_date,
-"apikey": api_key
-}
-try:
-res = requests.get(url, params=params, timeout=15)
-res.raise_for_status()
-return res.json()
-except Exception as e:
-print(f"❌ خطأ أثناء جلب البيانات من FMP API: {e}")
-return []
-def main():
-# قراءة المفاتيح من بيئة التشغيل (GitHub Secrets)
-fmp_api_key = os.getenv("FMP_API_KEY")
-telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-if not all([fmp_api_key, telegram_bot_token, telegram_chat_id]):
-print("❌ خطأ: بعض المفاتيح السرية مفقودة! تأكد من ضبط FMP_API_KEY و TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في GitHub Secrets.")
-sys.exit(1)
-# تحديد النطاق الزمني (من اليوم وحتى 7 أيام قادمة)
-today = datetime.now()
-start_date = today.strftime("%Y-%m-%d")
-end_date = (today + timedelta(days=7)).strftime("%Y-%m-%d")
-print(f"🔍 البحث عن التقسيمات العكسية للفترة من {start_date} إلى {end_date}...")
-splits_data = fetch_stock_splits(fmp_api_key, start_date, end_date)
-reverse_splits = []
-# تصفية التقسيمات العكسية (يكون فيها البسط أقل من المقاوم/النسبة أقل من 1)
-for item in splits_data:
-num = item.get("numerator")
-den = item.get("denominator")
-if num is not None and den is not None:
-if num < den:  # التقسيم العكسي مثل 1:10 أو 1:5
-reverse_splits.append(item)
-elif "label" in item:
-label = str(item.get("label", ""))
-if "-" in label or ":" in label:
-sep = "-" if "-" in label else ":"
-parts = label.split(sep)
-try:
-if float(parts[0].strip()) < float(parts[1].strip()):
-reverse_splits.append(item)
-except ValueError:
-pass
-# صياغة الرسالة لتلجرام
-header = f"🚨 <b>تقرير الأسهم ذات التقسيم العكسي (Reverse Split)</b> 🚨\n"
-header += f"📅 <b>الفترة:</b> من {start_date} إلى {end_date}\n\n"
-if not reverse_splits:
-message = header + "✅ <b>لا توجد تقسيمات عكسية مجدولة للأسبوع القادم.</b>"
-else:
-message = header + f"📊 <b>تم العثور على ({len(reverse_splits)}) شركة:</b>\n\n"
-for idx, split in enumerate(reverse_splits, 1):
-symbol = split.get("symbol", "N/A")
-date = split.get("date", "N/A")
-num = split.get("numerator", "")
-den = split.get("denominator", "")
-label = split.get("label", f"{num}:{den}")
-message += f"{idx}. <b>الرمز:</b> <code>{symbol}</code>\n"
-message += f"   🗓 <b>التاريخ:</b> {date}\n"
-message += f"   🔄 <b>النسبة:</b> {label}\n"
-message += f"────────────────\n"
-print("📤 جاري إرسال التقرير...")
-send_telegram_message(telegram_bot_token, telegram_chat_id, message)
-if name == "main":
-main()
+name: SplitStocks Reverse Split Bot
 on:
-  # التشغيل المجدول: كل يوم أحد الساعة 19:00 UTC (الساعة 22:00 بتوقيت مكة المكرمة)
-  schedule:
-    - cron: '0 19 * * 0'
-  
-  # إمكانية التشغيل اليدوي من واجهة GitHub
-  workflow_dispatch:
-
+schedule:
+# الأحد الساعة 22:15 بتوقيت مكة المكرمة (19:15 UTC)
+- cron: '15 19 * * 0'
+workflow_dispatch:
 jobs:
-  run-bot:
-    runs-runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Weekly Split Search
-        env:
-          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python main.py --action weekly
+run-bot:
+runs-on: ubuntu-latest
+steps:
+- name: Checkout Repository
+uses: actions/checkout@v4
+- name: Set up Python
+uses: actions/setup-python@v5
+with:
+python-version: '3.10'
+- name: Install Dependencies
+run: |
+python -m pip install --upgrade pip
+pip install requests schedule
+- name: Run Reverse Split Search
+env:
+FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+run: python main.py
