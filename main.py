@@ -1,7 +1,7 @@
 name: SplitStocks Reverse Split Bot
 on:
 schedule:
-# الأحد الساعة 22:15 بتوقيت مكة المكرمة (19:15 UTC)
+# الأحد الساعة 22:35 بتوقيت مكة المكرمة (19:15 UTC)
 - cron: '15 19 * * 0'
 workflow_dispatch:
 jobs:
