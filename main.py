@@ -30,12 +30,42 @@ def send_telegram_message(message):
         print(f"❌ خطأ أثناء إرسال تلجرام: {e}")
         return False
 
-def get_upcoming_splits_web():
-    """جلب التقسيمات العكسية القادمة من المصادر العامة للتغلب على قيود FMP المجاني."""
-    print("🌐 جلب التقسيمات القادمة من المصادر العامة...")
+def parse_date(date_str):
+    """تحويل النص التاريخي إلى تاريخ حقيقي للتحقق منه."""
+    try:
+        for fmt in ("%b %d, %Y", "%Y-%m-%d", "%b %d %Y", "%d %b %Y"):
+            try:
+                return datetime.datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                pass
+        parsed = datetime.datetime.strptime(date_str, "%b %d").date()
+        return parsed.replace(year=datetime.date.today().year)
+    except Exception:
+        return None
+
+def is_reverse_split(ratio_str):
+    """التحقق القاطع من أن التقسيم عكسي (Reverse) وليس عادي (Forward)."""
+    ratio_str = ratio_str.lower().strip()
+    if "forward" in ratio_str:
+        return False
+    
+    # التقسيم العكسي يكون بنسبة 1 مقابل X (مثال: 1 for 10 أو 1:10)
+    match_for = re.search(r'(\d+)\s*(?:for|-for-|\:)\s*(\d+)', ratio_str)
+    if match_for:
+        num = float(match_for.group(1))
+        den = float(match_for.group(2))
+        return num < den  # البسط أصغر من المقام
+    
+    return "reverse" in ratio_str
+
+def get_upcoming_reverse_splits():
+    """جلب التقسيمات العكسية الحقيقية فقط للأسبوع القادم."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
+    
+    today = datetime.date.today()
+    end_window = today + datetime.timedelta(days=7)
     
     splits_list = []
     
@@ -48,51 +78,29 @@ def get_upcoming_splits_web():
             for row in rows:
                 cols = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
                 if len(cols) >= 4:
-                    date_str = re.sub(r'<[^>]+>', '', cols[0]).strip()
-                    symbol_str = re.sub(r'<[^>]+>', '', cols[1]).strip()
-                    ratio_str = re.sub(r'<[^>]+>', '', cols[3]).strip() if len(cols) > 3 else ""
+                    raw_date = re.sub(r'<[^>]+>', '', cols[0]).strip()
+                    raw_symbol = re.sub(r'<[^>]+>', '', cols[1]).strip()
+                    raw_ratio = re.sub(r'<[^>]+>', '', cols[3]).strip() if len(cols) > 3 else ""
                     
-                    if symbol_str and ("for" in ratio_str.lower() or ":" in ratio_str or "1-" in ratio_str):
-                        symbol = symbol_str.split()[0].upper()
-                        splits_list.append({
-                            'symbol': symbol,
-                            'date': date_str,
-                            'ratio': ratio_str
-                        })
+                    symbol = raw_symbol.split()[0].upper()
+                    split_date = parse_date(raw_date)
+                    
+                    # شرط أساسي: التاريخ يجب أن يكون في المستقبل ضمن الأيام الـ 7 القادمة فقط
+                    if split_date and (today <= split_date <= end_window):
+                        # شرط أساسي: تقسيم عكسي فقط
+                        if is_reverse_split(raw_ratio):
+                            splits_list.append({
+                                'symbol': symbol,
+                                'date': split_date.strftime("%Y-%m-%d"),
+                                'ratio': raw_ratio
+                            })
     except Exception as e:
-        print(f"⚠️ تعذر جلب التقسيمات من المصدر العام: {e}")
+        print(f"⚠️ خطأ أثناء الفحص: {e}")
 
     return splits_list
 
-def get_fmp_calendar_splits():
-    """محاولة جلب التقسيمات من FMP كخيار ثانوي."""
-    if not FMP_API_KEY:
-        return []
-    
-    start_date = datetime.date.today()
-    end_date = start_date + datetime.timedelta(days=7)
-    calendar_url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={start_date}&to={end_date}&apikey={FMP_API_KEY}"
-    
-    try:
-        res = requests.get(calendar_url, timeout=10).json()
-        if isinstance(res, list):
-            fmp_splits = []
-            for item in res:
-                num = item.get('numerator', 1)
-                den = item.get('denominator', 1)
-                if num < den:
-                    fmp_splits.append({
-                        'symbol': item.get('symbol'),
-                        'date': item.get('date'),
-                        'ratio': f"{num}:{den}"
-                    })
-            return fmp_splits
-    except Exception as e:
-        print(f"⚠️ خطأ FMP Calendar: {e}")
-    return []
-
 def get_stock_details(ticker):
-    """جلب التفاصيل الحالية للشركة والتاريخ وفحص أسهم البيني عبر FMP."""
+    """جلب تفاصيل السعر وعدد الأسهم والتقسيمات السابقة."""
     if not FMP_API_KEY:
         return {'price': 0.0, 'shares': 0, 'has_prior_splits': False, 'prior_splits_count': 0, 'is_penny': False}
         
@@ -126,30 +134,25 @@ def get_stock_details(ticker):
         return {'price': 0.0, 'shares': 0, 'has_prior_splits': False, 'prior_splits_count': 0, 'is_penny': False}
 
 def run_weekly_check():
-    """تشغيل الفحص الأسبوعي وتجميع نتائج التقسيم العكسي."""
-    print("🔍 بدء عملية الفحص الأسبوعي للأسهم...")
+    today = datetime.date.today()
+    end_date = today + datetime.timedelta(days=7)
     
-    # دمج التقسيمات من المصدر العام و FMP
-    web_splits = get_upcoming_splits_web()
-    fmp_splits = get_fmp_calendar_splits()
+    print(f"🔍 بدء الفحص للأسبوع الممتد من {today} إلى {end_date}...")
     
-    combined_splits = {}
-    for item in web_splits + fmp_splits:
-        symbol = item['symbol']
-        if symbol not in combined_splits:
-            combined_splits[symbol] = item
-
-    if not combined_splits:
-        start_date = datetime.date.today()
-        end_date = start_date + datetime.timedelta(days=7)
-        send_telegram_message(f"ℹ️ لا توجد تقسيمات معلنة للأسبوع القادم (من {start_date} إلى {end_date}).")
+    splits = get_upcoming_reverse_splits()
+    
+    if not splits:
+        message = f"ℹ️ لا توجد أسهم معلنة للتقسيم العكسي (Reverse Split) للأسبوع القادم (من <code>{today}</code> إلى <code>{end_date}</code>)."
+        print(message)
+        send_telegram_message(message)
         return
 
     grouped_splits = defaultdict(list)
 
-    for symbol, item in combined_splits.items():
-        target_date = item.get('date', 'غير محدد')
-        ratio_str = item.get('ratio', 'غير محدد')
+    for item in splits:
+        symbol = item['symbol']
+        target_date = item['date']
+        ratio_str = item['ratio']
         
         details = get_stock_details(symbol)
         has_split_before = "نعم" if details['has_prior_splits'] else "لا"
@@ -165,9 +168,7 @@ def run_weekly_check():
         )
         grouped_splits[target_date].append(stock_info)
 
-    start_date = datetime.date.today()
-    end_date = start_date + datetime.timedelta(days=7)
-    header = f"📊 <b>جدول التقسيمات العكسية للأسبوع</b>\n🗓️ الفترة: من <code>{start_date}</code> إلى <code>{end_date}</code>\n"
+    header = f"📊 <b>جدول التقسيمات العكسية (Reverse Split فقط)</b>\n🗓️ الفترة: من <code>{today}</code> إلى <code>{end_date}</code>\n"
     
     sections = []
     for split_date, stocks in sorted(grouped_splits.items()):
