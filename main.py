@@ -2,6 +2,7 @@ import os
 import sys
 import datetime
 import requests
+from collections import defaultdict
 
 # قراءة المفاتيح من GitHub Secrets
 FMP_API_KEY = os.getenv("FMP_API_KEY")
@@ -31,17 +32,18 @@ def send_telegram_message(message):
 def get_stock_details(ticker):
     """جلب التفاصيل الحالية للشركة والتاريخ."""
     if not FMP_API_KEY:
-        return None
+        return {'price': 0.0, 'shares': 0, 'has_prior_splits': False, 'prior_splits_count': 0}
         
     try:
         profile_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
         res = requests.get(profile_url, timeout=10).json()
-        if not res or not isinstance(res, list):
-            return None
         
-        price = res[0].get('price', 0.0)
-        mcap = res[0].get('mktCap', 0)
-        shares = (mcap / price) if price > 0 else 0
+        price = 0.0
+        shares = 0
+        if isinstance(res, list) and len(res) > 0:
+            price = res[0].get('price', 0.0)
+            mcap = res[0].get('mktCap', 0)
+            shares = (mcap / price) if price and price > 0 else 0
 
         history_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_split/{ticker}?apikey={FMP_API_KEY}"
         hist_res = requests.get(history_url, timeout=10).json()
@@ -57,21 +59,21 @@ def get_stock_details(ticker):
         }
     except Exception as e:
         print(f"⚠️ خطأ في بيانات {ticker}: {e}")
-        return None
+        return {'price': 0.0, 'shares': 0, 'has_prior_splits': False, 'prior_splits_count': 0}
 
 def run_weekly_check():
-    """تشغيل الفحص الأسبوعي."""
+    """تشغيل الفحص الأسبوعي وتجميع النتائج مقسمة بحسب الأيام."""
     print("🔍 بدء عملية الفحص الأسبوعي للأسهم...")
     
     if not FMP_API_KEY:
         print("❌ FMP_API_KEY غير موجود في Secrets!")
         sys.exit(1)
 
-    today = datetime.date.today()
-    next_monday = today + datetime.timedelta(days=1)
-    next_friday = today + datetime.timedelta(days=5)
+    # تحديد نطاق الأسبوع من اليوم إلى 7 أيام قادمة
+    start_date = datetime.date.today()
+    end_date = start_date + datetime.timedelta(days=7)
     
-    calendar_url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={next_monday}&to={next_friday}&apikey={FMP_API_KEY}"
+    calendar_url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={start_date}&to={end_date}&apikey={FMP_API_KEY}"
     
     try:
         splits_data = requests.get(calendar_url, timeout=15).json()
@@ -79,41 +81,49 @@ def run_weekly_check():
         print(f"❌ خطأ في الاتصال بالـ API: {e}")
         sys.exit(1)
 
-    if not isinstance(splits_data, list):
-        send_telegram_message("ℹ️ لم يتم العثور على تقسيمات معلنة للأسبوع القادم.")
+    if not isinstance(splits_data, list) or len(splits_data) == 0:
+        send_telegram_message(f"ℹ️ لا توجد تقسيمات معلنة للأسبوع القادم (من {start_date} إلى {end_date}).")
         return
 
-    detected_stocks = []
+    # ترتيب بيانات الأسهم بحسب التاريخ
+    splits_data = sorted(splits_data, key=lambda x: x.get('date', ''))
     
+    # قاموس لتجميع الأسهم تحت كل يوم
+    grouped_splits = defaultdict(list)
+
     for item in splits_data:
         ticker = item.get('symbol')
         target_date = item.get('date')
         num = item.get('numerator', 1)
         den = item.get('denominator', 1)
         
+        # الفلترة للتقسيم العكسي (البسط أقل من المقام)
         if num < den:
             details = get_stock_details(ticker)
-            if details:
-                ratio_str = f"{num}:{den}"
-                has_split_before = "نعم" if details['has_prior_splits'] else "لا"
-                
-                stock_info = (
-                    f"🔹 <b>الرمز:</b> ${ticker}\n"
-                    f"📅 <b>تاريخ التنفيذ:</b> {target_date}\n"
-                    f"⚖️ <b>نتيجة التقسيم:</b> {ratio_str}\n"
-                    f"💵 <b>سعر السهم الحالي:</b> ${details['price']:.2f}\n"
-                    f"📊 <b>عدد الأسهم الحالية:</b> {details['shares']:,.0f}\n"
-                    f"🔄 <b>هل سبق له التقسيم عكسياً؟:</b> {has_split_before} ({details['prior_splits_count']} مرة)\n"
-                    f"-----------------------------------"
-                )
-                detected_stocks.append(stock_info)
+            ratio_str = f"{num}:{den}"
+            has_split_before = "نعم" if details['has_prior_splits'] else "لا"
+            
+            stock_info = (
+                f"🔹 <b>الرمز:</b> ${ticker}\n"
+                f"   ⚖️ <b>النسبة:</b> {ratio_str}\n"
+                f"   💵 <b>السعر الحالي:</b> ${details['price']:.2f}\n"
+                f"   📊 <b>عدد الأسهم:</b> {details['shares']:,.0f}\n"
+                f"   🔄 <b>تقسيم سابق:</b> {has_split_before} ({details['prior_splits_count']} مرة)"
+            )
+            grouped_splits[target_date].append(stock_info)
 
-    header = f"🚨 <b>تقرير التقسيم العكسي للأسبوع القادم</b>\n🗓️ {next_monday} إلى {next_friday}\n\n"
+    header = f"📊 <b>جدول التقسيمات العكسية للأسبوع</b>\n🗓️ الفترة: من <code>{start_date}</code> إلى <code>{end_date}</code>\n"
     
-    if detected_stocks:
-        final_message = header + "\n\n".join(detected_stocks)
+    if not grouped_splits:
+        final_message = header + "\nℹ️ لا توجد أسهم معلنة للتقسيم العكسي خلال الأيام السبعة القادمة."
     else:
-        final_message = header + "ℹ️ لا توجد أسهم معلنة للتقسيم العكسي خلال الأسبوع القادم."
+        sections = []
+        for split_date, stocks in grouped_splits.items():
+            day_header = f"📅 <b><u>يوم {split_date}</u></b> ({len(stocks)} أسهم):"
+            stocks_list = "\n\n".join(stocks)
+            sections.append(f"{day_header}\n{stocks_list}")
+        
+        final_message = header + "\n" + "\n───────────────\n".join(sections)
 
     print(final_message)
     send_telegram_message(final_message)
