@@ -9,7 +9,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-# ترجمة القطاعات
+# قاموس ترجمة القطاعات
 SECTOR_MAP = {
     "Health Technology": "الرعاية الصحية - تكنولوجيا",
     "Healthcare": "الرعاية الصحية (Healthcare)",
@@ -42,7 +42,7 @@ SECTOR_MAP = {
     "Communication Services": "خدمات الاتصالات"
 }
 
-# ترجمة الأنشطة
+# قاموس ترجمة الأنشطة
 INDUSTRY_MAP = {
     "Software - Infrastructure": "البرمجيات - البنية التحتية",
     "Software - Application": "البرمجيات - التطبيقات",
@@ -97,7 +97,6 @@ def send_telegram_message(message):
             return True
         else:
             print(f"❌ فشل إرسال التليجرام: {res.text}")
-            # إعادة المحاولة بدون HTML في حال وجود رمز خاص يمنع التحليل
             clean_text = re.sub(r'<[^>]+>', '', message)
             res_retry = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_text}, timeout=15)
             return res_retry.ok
@@ -141,7 +140,6 @@ def get_todays_reverse_splits():
     
     splits_dict = {}
 
-    # المصدر الرسمي المفتوح 1: Nasdaq API
     try:
         nasdaq_url = f"https://api.nasdaq.com/api/calendar/splits?date={today_str}"
         headers = {
@@ -161,7 +159,6 @@ def get_todays_reverse_splits():
                 ratio_str = str(row.get('ratio', ''))
                 num, den = extract_ratio_numbers(ratio_str)
                 
-                # التقسيم العكسي يكون فيه num < den (مثل 1 / 10)
                 is_reverse = (num is not None and den is not None and num < den) or "reverse" in ratio_str.lower()
                 
                 if symbol and is_reverse and symbol not in splits_dict:
@@ -175,31 +172,10 @@ def get_todays_reverse_splits():
     except Exception as e:
         print("Nasdaq API Error:", e)
 
-    # المصدر المفتوح 2: FMP API (في حال توفر المفتاح)
-    if FMP_API_KEY and not splits_dict:
-        try:
-            url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={today_str}&to={today_str}&apikey={FMP_API_KEY}"
-            res = requests.get(url, timeout=10).json()
-            if isinstance(res, list):
-                for item in res:
-                    symbol = item.get('symbol', '').upper()
-                    num = float(item.get('numerator', 0))
-                    den = float(item.get('denominator', 0))
-                    if symbol and num > 0 and den > 0 and num < den and symbol not in splits_dict:
-                        splits_dict[symbol] = {
-                            'symbol': symbol,
-                            'date': today_est,
-                            'num': num,
-                            'den': den,
-                            'raw_text': f"{num} for {den}"
-                        }
-        except Exception as e:
-            print("FMP Calendar error:", e)
-
     return list(splits_dict.values())
 
 # ==========================================
-# 2. جلب بيانات السهم المباشرة من Yahoo QuoteSummary API
+# 2. جلب بيانات السهم بدون Crumb المباشر من Yahoo v7 & v8 & Search
 # ==========================================
 def get_stock_data(ticker, ratio_num, ratio_den):
     headers = {
@@ -214,33 +190,46 @@ def get_stock_data(ticker, ratio_num, ratio_den):
         'raw_float': 0.0
     }
 
+    # أ) جلب السعر، الإغلاق السابقة والفلوت عبر v7/finance/quote (مفتوح بدون أذونات)
     try:
-        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=assetProfile,price,summaryDetail,defaultKeyStatistics"
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        if res.status_code == 200:
-            result = res.json().get('quoteSummary', {}).get('result', [{}])[0]
-            
-            # 1. القطاع والنشاط
-            profile = result.get('assetProfile', {})
-            raw_sec = profile.get('sector', '')
-            raw_ind = profile.get('industry', '')
-            if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
-            if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
-
-            # 2. الأسعار
-            price_mod = result.get('price', {})
-            summary_mod = result.get('summaryDetail', {})
-            
-            data['price'] = float(price_mod.get('regularMarketPrice', {}).get('raw') or 0.0)
-            data['prev_close'] = float(summary_mod.get('previousClose', {}).get('raw') or price_mod.get('regularMarketPreviousClose', {}).get('raw') or 0.0)
-
-            # 3. الفلوت
-            stats_mod = result.get('defaultKeyStatistics', {})
-            data['raw_float'] = float(stats_mod.get('floatShares', {}).get('raw') or stats_mod.get('sharesOutstanding', {}).get('raw') or 0.0)
-
+        q_url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
+        q_res = requests.get(q_url, headers=headers, timeout=8)
+        if q_res.status_code == 200:
+            q_data = q_res.json().get('quoteResponse', {}).get('result', [{}])[0]
+            data['price'] = float(q_data.get('regularMarketPrice') or 0.0)
+            data['prev_close'] = float(q_data.get('regularMarketPreviousClose') or 0.0)
+            data['raw_float'] = float(q_data.get('floatShares') or q_data.get('sharesOutstanding') or 0.0)
     except Exception as e:
-        print(f"Yahoo QuoteSummary API Error for {ticker}: {e}")
+        print(f"Yahoo Quote v7 Error for {ticker}: {e}")
+
+    # ب) الاحتياط للسعر عبر v8/finance/chart
+    if data['price'] == 0:
+        try:
+            c_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
+            c_res = requests.get(c_url, headers=headers, timeout=8)
+            if c_res.status_code == 200:
+                meta = c_res.json().get('chart', {}).get('result', [{}])[0].get('meta', {})
+                data['price'] = float(meta.get('regularMarketPrice') or 0.0)
+                if data['prev_close'] == 0:
+                    data['prev_close'] = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
+        except Exception as e:
+            print(f"Yahoo Chart v8 Error for {ticker}: {e}")
+
+    # ج) جلب القطاع والنشاط عبر Search API (مفتوح بدون أذونات)
+    try:
+        s_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={ticker}"
+        s_res = requests.get(s_url, headers=headers, timeout=8)
+        if s_res.status_code == 200:
+            quotes = s_res.json().get('quotes', [])
+            for q in quotes:
+                if q.get('symbol', '').upper() == ticker.upper():
+                    raw_sec = q.get('sectorDisp') or q.get('sector') or ''
+                    raw_ind = q.get('industryDisp') or q.get('industry') or ''
+                    if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                    if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
+                    break
+    except Exception as e:
+        print(f"Yahoo Search Error for {ticker}: {e}")
 
     return data
 
@@ -259,7 +248,7 @@ def get_prior_splits(ticker):
     return count
 
 def run_task():
-    print("🚀 بدء تشغيل السكربت بفحص المصادر المفتوحة...")
+    print("🚀 بدء تشغيل السكربت بفحص البيانات...")
     splits = get_todays_reverse_splits()
 
     if not splits:
@@ -269,7 +258,7 @@ def run_task():
             f"ℹ️ <b>تحديث فحص الأسهم اليومي:</b>\n"
             f"⏰ الوقت: <code>{now_str} UTC</code>\n"
             f"──────────────────\n"
-            f"تم فحص السوق بنجاح عبر المصادر الرسمية، ولم يُعثر على أسهم تقسيم عكسي جديدة لهذا اليوم."
+            f"تم فحص السوق بنجاح، ولم يُعثر على أسهم تقسيم عكسي جديدة لهذا اليوم."
         )
         send_telegram_message(msg)
         return
@@ -289,7 +278,6 @@ def run_task():
         if num and den and num < den:
             factor = den / num
 
-        # خوارزمية السعر النظري والتغير
         theoretical_price = 0.0
         post_split_current = 0.0
 
@@ -326,7 +314,6 @@ def run_task():
         price_disp = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
         theoretical_disp = f"${round(theoretical_price, 2)}" if theoretical_price > 0 else "غير متوفر"
 
-        # تنظيف النصوص لضمان عدم وجود رموز تؤثر على HTML التليجرام
         clean_sector = html.escape(stock_data['sector'])
         clean_industry = html.escape(stock_data['industry'])
         clean_ratio = html.escape(format_ratio_ar(num, den, item['raw_text']))
