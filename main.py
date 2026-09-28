@@ -12,7 +12,7 @@ def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Missing Telegram secrets")
         return False
-    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
+    url = "https://api.telegram.org/bot" + str(TELEGRAM_BOT_TOKEN) + "/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
@@ -39,35 +39,44 @@ def parse_date(date_str):
     except:
         return None
 
-def is_reverse_split(ratio_str):
-    ratio_str = str(ratio_str).lower().strip()
-    if "forward" in ratio_str:
-        return False
-    if "reverse" in ratio_str:
-        return True
-    match = re.search(r'(\d+(?:\.\d+)?)\s*(?:for|-for-|:|-|to)\s*(\d+(?:\.\d+)?)', ratio_str)
-    if match:
-        return float(match.group(1)) < float(match.group(2))
-    return False
-
 def extract_ratio_numbers(ratio_str):
-    match = re.search(r'(\d+(?:\.\d+)?)\s*(?:for|-for-|:|-|to)\s*(\d+(?:\.\d+)?)', str(ratio_str).lower())
-    if match:
-        return float(match.group(1)), float(match.group(2))
+    ratio_str = str(ratio_str).lower().strip()
+    patterns = [
+        r'(\d+(?:\.\d+)?)\s*(?:-?\s*for\s*-?|:|-|to)\s*(\d+(?:\.\d+)?)',
+        r'(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)',
+        r'(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, ratio_str)
+        if match:
+            return float(match.group(1)), float(match.group(2))
     return None, None
 
 def format_ratio_ar(ratio_str):
     num, den = extract_ratio_numbers(ratio_str)
     if num is not None and den is not None:
-        if num == 1:
-            return f"1 مقابل {int(den) if den.is_integer() else den}"
-        return f"{num} مقابل {den}"
+        # في التطبيقات تظهر 20:1 معناها 1 مقابل 20
+        if num > den:
+            return "1 مقابل " + str(int(num) if num == int(num) else num)
+        else:
+            return "1 مقابل " + str(int(den) if den == int(den) else den)
     return "تقسيم عكسي"
+
+def is_reverse_split(ratio_str):
+    ratio_str = str(ratio_str).lower()
+    if "forward" in ratio_str:
+        return False
+    if "reverse" in ratio_str:
+        return True
+    num, den = extract_ratio_numbers(ratio_str)
+    if num is not None and den is not None:
+        return True  # أي نسبة من النوع ده غالباً عكسي في السياق الحالي
+    return False
 
 def get_yahoo_price(ticker):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/" + ticker + "?interval=1d&range=5d"
         res = requests.get(url, headers=headers, timeout=12).json()
         meta = res.get('chart', {}).get('result', [{}])[0].get('meta', {})
         price = meta.get('regularMarketPrice') or meta.get('previousClose') or 0
@@ -79,12 +88,14 @@ def get_prior_splits(ticker):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     count = 0
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=5y"
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/" + ticker + "?events=splits&interval=1d&range=5y"
         res = requests.get(url, headers=headers, timeout=12).json()
         events = res.get('chart', {}).get('result', [{}])[0].get('events', {})
         splits = events.get('splits', {})
         for data in splits.values():
-            if data.get('numerator', 1) < data.get('denominator', 1):
+            num = data.get('numerator', 1)
+            den = data.get('denominator', 1)
+            if num < den:
                 count += 1
     except:
         pass
@@ -96,7 +107,6 @@ def get_upcoming_reverse_splits(days_ahead=7):
     end_window = today + datetime.timedelta(days=days_ahead)
     splits_list = []
 
-    # مصدر 1: stockanalysis
     try:
         url = "https://stockanalysis.com/actions/splits/"
         response = requests.get(url, headers=headers, timeout=20)
@@ -119,7 +129,6 @@ def get_upcoming_reverse_splits(days_ahead=7):
     except Exception as e:
         print("stockanalysis error:", e)
 
-    # إزالة التكرار
     unique = {}
     for s in splits_list:
         unique[(s['symbol'], s['date'])] = s
@@ -128,12 +137,12 @@ def get_upcoming_reverse_splits(days_ahead=7):
 def run_weekly_check():
     today = datetime.date.today()
     end_date = today + datetime.timedelta(days=7)
-    print(f"بدء الفحص من {today} إلى {end_date}")
+    print("Starting check from", today, "to", end_date)
 
     splits = get_upcoming_reverse_splits(7)
 
     if not splits:
-        msg = f"ℹ️ لا توجد تقسيمات عكسية معلنة\nمن {today} إلى {end_date}"
+        msg = "ℹ️ لا توجد تقسيمات عكسية معلنة\nمن " + str(today) + " إلى " + str(end_date)
         send_telegram_message(msg)
         return
 
@@ -143,20 +152,23 @@ def run_weekly_check():
         symbol = item['symbol']
         price = get_yahoo_price(symbol)
         prior = get_prior_splits(symbol)
-        num, den = extract_ratio_numbers(item['ratio'])
         ratio_ar = format_ratio_ar(item['ratio'])
+        num, den = extract_ratio_numbers(item['ratio'])
 
-        # سعر التقسيم النظري (بعد التقسيم)
-        theoretical_price = 0
-        if price > 0 and num and den and den > 0:
-            theoretical_price = price * (den / num)   # لأن 1 مقابل 9 → السعر × 9
+        theoretical = 0.0
+        if price > 0 and num and den:
+            # لو النسبة 20:1 معناها السعر يتضرب في 20
+            if num > den:
+                theoretical = price * num
+            else:
+                theoretical = price * den
 
         info = (
-            f"🔹 <b>${symbol}</b>\n"
-            f"⚖️ النسبة: <b>{ratio_ar}</b>\n"
-            f"💵 السعر الحالي: <b>${price:.4f}</b>\n"
-            f"📈 سعر التقسيم النظري: <b>${theoretical_price:.2f}</b>\n"
-            f"🔄 تقسيمات سابقة: <b>{prior}</b> مرة"
+            "🔹 <b>$" + symbol + "</b>\n"
+            "⚖️ النسبة: <b>" + ratio_ar + "</b>\n"
+            "💵 السعر الحالي: <b>$" + str(round(price, 4)) + "</b>\n"
+            "📈 سعر التقسيم النظري: <b>$" + str(round(theoretical, 2)) + "</b>\n"
+            "🔄 تقسيمات سابقة: <b>" + str(prior) + "</b> مرة"
         )
         return item['date'], info
 
@@ -170,23 +182,23 @@ def run_weekly_check():
                 print("Error:", e)
 
     header = (
-        f"📊 <b>جدول التقسيمات العكسية</b>\n"
-        f"🗓️ من <code>{today}</code> إلى <code>{end_date}</code>\n"
-        f"──────────────────"
+        "📊 <b>جدول التقسيمات العكسية</b>\n"
+        "🗓️ من <code>" + str(today) + "</code> إلى <code>" + str(end_date) + "</code>\n"
+        "──────────────────"
     )
 
     sections = []
     for d in sorted(grouped.keys()):
         stocks = grouped[d]
-        day_header = f"📅 <b>{d}</b> ({len(stocks)} أسهم)"
+        day_header = "📅 <b>" + str(d) + "</b> (" + str(len(stocks)) + " أسهم)"
         sections.append(day_header + "\n\n" + "\n\n".join(stocks))
 
     final = header + "\n\n" + "\n\n───────────────\n\n".join(sections)
     final += (
         "\n\n──────────────────\n"
-        "📌 <b>ملاحظة مهمة:</b>\n"
-        "بعد بدء التداول بعد التقسيم، راقب نسبة الهبوط.\n"
-        "لو نزل السعر أكتر من <b>30%</b> من سعر التقسيم النظري → غالباً بيرتد بقوة."
+        "📌 <b>ملاحظة:</b>\n"
+        "بعد بدء التداول بعد التقسيم راقب نسبة الهبوط.\n"
+        "لو نزل أكتر من <b>30%</b> من سعر التقسيم النظري → غالباً بيرتد بقوة."
     )
 
     print(final)
