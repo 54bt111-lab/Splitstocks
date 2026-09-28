@@ -9,17 +9,34 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
 SECTOR_MAP = {
+    "Health Technology": "الرعاية الصحية - تكنولوجيا (Health Technology)",
     "Healthcare": "الرعاية الصحية (Healthcare)",
+    "Health Services": "الخدمات الصحية (Health Services)",
+    "Electronic Technology": "التكنولوجيا الإلكترونية (Electronic Technology)",
+    "Technology Services": "خدمات التكنولوجيا (Technology Services)",
     "Technology": "التكنولوجيا (Technology)",
+    "Finance": "الخدمات المالية (Finance)",
     "Financial Services": "الخدمات المالية (Financial Services)",
     "Financial": "الخدمات المالية (Financial Services)",
-    "Energy": "الطاقة (Energy)",
+    "Commercial Services": "الخدمات التجارية (Commercial Services)",
+    "Consumer Durables": "السلع الاستهلاكية المعمرة (Consumer Durables)",
+    "Consumer Non-Durables": "السلع الاستهلاكية غير المعمرة (Consumer Non-Durables)",
     "Consumer Cyclical": "السلع الاستهلاكية الدورية (Consumer Cyclical)",
     "Consumer Defensive": "السلع الاستهلاكية الدفاعية (Consumer Defensive)",
+    "Consumer Services": "الخدمات الاستهلاكية (Consumer Services)",
+    "Energy Minerals": "معادن الطاقة (Energy Minerals)",
+    "Energy": "الطاقة (Energy)",
+    "Non-Energy Minerals": "المعادن غير الطاقية (Non-Energy Minerals)",
+    "Process Industries": "الصناعات التحويلية (Process Industries)",
+    "Producer Manufacturing": "التصنيع الإنتاجي (Producer Manufacturing)",
     "Industrials": "الصناعة (Industrials)",
+    "Industrial Services": "الخدمات الصناعية (Industrial Services)",
     "Basic Materials": "المواد الأساسية (Basic Materials)",
     "Real Estate": "العقارات (Real Estate)",
     "Utilities": "المرافق العامة (Utilities)",
+    "Retail Trade": "تجارة التجزئة (Retail Trade)",
+    "Transportation": "النقل والمواصلات (Transportation)",
+    "Communications": "الاتصالات (Communications)",
     "Communication Services": "خدمات الاتصالات (Communication Services)"
 }
 
@@ -84,14 +101,14 @@ def format_shares_count(num):
         return f"{int(num)} سهم"
 
 # ==========================================
-# 1. جلب التقسيمات العكسية اليومية من عدة مصادر
+# 1. جلب التقسيمات العكسية اليومية
 # ==========================================
 def get_todays_reverse_splits():
     today = datetime.date.today()
     today_str = today.strftime("%Y-%m-%d")
     splits_dict = {}
 
-    # المصدر الأول: FMP Stock Split Calendar API
+    # 1. FMP API Calendar
     if FMP_API_KEY:
         try:
             url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={today_str}&to={today_str}&apikey={FMP_API_KEY}"
@@ -110,9 +127,9 @@ def get_todays_reverse_splits():
                             'raw_text': f"{num} for {den}"
                         }
         except Exception as e:
-            print("FMP Split Calendar error:", e)
+            print("FMP Calendar error:", e)
 
-    # المصدر الثاني: StockAnalysis Scraping
+    # 2. StockAnalysis Scraping
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         url = "https://stockanalysis.com/actions/splits/"
@@ -142,31 +159,10 @@ def get_todays_reverse_splits():
     except Exception as e:
         print("StockAnalysis error:", e)
 
-    # المصدر الثالث: Yahoo Finance Split Calendar
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        url = f"https://query1.finance.yahoo.com/v1/finance/calendar/splits?startDate={today_str}&endDate={today_str}"
-        y_res = requests.get(url, headers=headers, timeout=12).json()
-        splits = y_res.get('calendarEvents', {}).get('result', [])
-        for s in splits:
-            symbol = s.get('symbol', '').upper()
-            num = float(s.get('numerator', 0))
-            den = float(s.get('denominator', 0))
-            if symbol and num > 0 and den > 0 and num < den and symbol not in splits_dict:
-                splits_dict[symbol] = {
-                    'symbol': symbol,
-                    'date': today,
-                    'num': num,
-                    'den': den,
-                    'raw_text': f"{num}:{den}"
-                }
-    except Exception as e:
-        print("Yahoo Calendar error:", e)
-
     return list(splits_dict.values())
 
 # ==========================================
-# 2. جلب معلومات السهم، السعر، والقطاع
+# 2. جلب معلومات السهم عبر TradingView Scanner API
 # ==========================================
 def get_stock_data(ticker, ratio_num, ratio_den):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -178,61 +174,91 @@ def get_stock_data(ticker, ratio_num, ratio_den):
         'post_split_float': 'غير متوفر'
     }
 
-    # FMP API
-    if FMP_API_KEY:
+    factor = 1.0
+    if ratio_num and ratio_den and ratio_num > 0 and ratio_den > 0:
+        factor = ratio_den / ratio_num if ratio_num < ratio_den else ratio_num / ratio_den
+
+    # 1. TradingView Scanner API (الخيار الأسرع والأدق)
+    try:
+        tv_payload = {
+            "filter": [{"left": "name", "operation": "equal", "right": ticker}],
+            "columns": [
+                "name",
+                "close",
+                "change",
+                "sector",
+                "industry",
+                "float_shares_outstanding",
+                "total_shares_outstanding"
+            ]
+        }
+        tv_req = requests.post(
+            "https://scanner.tradingview.com/america/scan",
+            json=tv_payload,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10
+        )
+        if tv_req.status_code == 200:
+            tv_json = tv_req.json().get("data", [])
+            if tv_json:
+                row = tv_json[0].get("d", [])
+                if len(row) >= 6:
+                    data['price'] = float(row[1]) if row[1] is not None else 0.0
+                    raw_sec = str(row[3]) if row[3] else ""
+                    
+                    if raw_sec and raw_sec.lower() != "peers":
+                        data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                    
+                    raw_ind = str(row[4]) if row[4] else ""
+                    if raw_ind and len(raw_ind) > 3:
+                        data['industry'] = raw_ind
+
+                    raw_float = row[5]
+                    if raw_float and raw_float > 0:
+                        calc_float = raw_float / factor if raw_float > 20_000_000 and factor > 1 else raw_float
+                        data['post_split_float'] = format_shares_count(calc_float)
+    except Exception as e:
+        print(f"TradingView fetch error for {ticker}: {e}")
+
+    # 2. Yahoo Chart v8 API (لجلب سعر الإغلاق السابق)
+    try:
+        for host in ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]:
+            y_url = f"https://{host}/v8/finance/chart/{ticker}?interval=1d&range=5d"
+            y_res = requests.get(y_url, headers=headers, timeout=8)
+            if y_res.status_code == 200:
+                meta = y_res.json().get('chart', {}).get('result', [{}])[0].get('meta', {})
+                if meta:
+                    p = float(meta.get('regularMarketPrice') or 0.0)
+                    pc = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
+                    if not data['price'] and p > 0:
+                        data['price'] = p
+                    if pc > 0:
+                        data['prev_close'] = pc
+                    break
+    except Exception as e:
+        print(f"Yahoo Chart v8 error for {ticker}: {e}")
+
+    # 3. FMP API
+    if FMP_API_KEY and (data['price'] == 0 or data['sector'] == 'غير متوفر'):
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_API_KEY}"
-            q_res = requests.get(q_url, timeout=10).json()
-            if q_res and isinstance(q_res, list) and len(q_res) > 0:
-                data['price'] = float(q_res[0].get('price', 0.0))
-                data['prev_close'] = float(q_res[0].get('previousClose', 0.0))
+            q_res = requests.get(q_url, timeout=8).json()
+            if isinstance(q_res, list) and len(q_res) > 0:
+                if not data['price']:
+                    data['price'] = float(q_res[0].get('price', 0.0))
+                if not data['prev_close']:
+                    data['prev_close'] = float(q_res[0].get('previousClose', 0.0))
 
             p_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
-            p_res = requests.get(p_url, timeout=10).json()
-            if p_res and isinstance(p_res, list) and len(p_res) > 0:
-                raw_sec = p_res[0].get('sector', '')
-                data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec or "غير متوفر")
-                data['industry'] = p_res[0].get('industry', 'غير متوفر')
-
-                mktCap = p_res[0].get('mktCap', 0)
-                price = data['price'] or data['prev_close']
-                if mktCap and price > 0 and ratio_num and ratio_den:
-                    factor = ratio_den / ratio_num if ratio_num < ratio_den else ratio_num / ratio_den
-                    total_shares = mktCap / price
-                    data['post_split_float'] = format_shares_count(total_shares / factor)
-
-            if data['price'] > 0 and data['sector'] != 'غير متوفر':
-                return data
+            p_res = requests.get(p_url, timeout=8).json()
+            if isinstance(p_res, list) and len(p_res) > 0:
+                if data['sector'] == 'غير متوفر':
+                    raw_sec = p_res[0].get('sector', '')
+                    data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec or "غير متوفر")
+                if data['industry'] == 'غير متوفر':
+                    data['industry'] = p_res[0].get('industry', 'غير متوفر')
         except Exception as e:
-            print(f"FMP fetch error for {ticker}: {e}")
-
-    # Finviz Scraping كاحتياطي
-    try:
-        fv_url = f"https://finviz.com/quote.ashx?t={ticker}"
-        fv_res = requests.get(fv_url, headers=headers, timeout=10)
-        if fv_res.status_code == 200:
-            sec_ind = re.findall(r'<a[^>]*class="tab-link"[^>]*>(.*?)</a>', fv_res.text)
-            if len(sec_ind) >= 2:
-                data['sector'] = SECTOR_MAP.get(sec_ind[0], sec_ind[0])
-                data['industry'] = sec_ind[1]
-
-            price_match = re.search(r'<b>Price</b>.*?<b[^>]*>(.*?)</b>', fv_res.text, re.DOTALL)
-            if price_match and not data['price']:
-                data['price'] = float(price_match.group(1))
-
-            float_match = re.search(r'<b>Shs Float</b>.*?<b[^>]*>(.*?)</b>', fv_res.text, re.DOTALL)
-            if float_match and data['post_split_float'] == 'غير متوفر':
-                raw_flt = float_match.group(1).strip()
-                mult = 1
-                if 'M' in raw_flt: mult = 1_000_000
-                elif 'K' in raw_flt: mult = 1_000
-                elif 'B' in raw_flt: mult = 1_000_000_000
-                flt_num = float(re.sub(r'[^\d.]', '', raw_flt)) * mult
-                if ratio_num and ratio_den:
-                    factor = ratio_den / ratio_num if ratio_num < ratio_den else ratio_num / ratio_den
-                    data['post_split_float'] = format_shares_count(flt_num / factor)
-    except Exception as e:
-        print(f"Finviz fetch error for {ticker}: {e}")
+            print(f"FMP error for {ticker}: {e}")
 
     return data
 
@@ -240,8 +266,8 @@ def get_prior_splits(ticker):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     count = 0
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=5y"
-        res = requests.get(url, headers=headers, timeout=10).json()
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=10y"
+        res = requests.get(url, headers=headers, timeout=8).json()
         splits = res.get('chart', {}).get('result', [{}])[0].get('events', {}).get('splits', {})
         for data in splits.values():
             if data.get('numerator', 1) < data.get('denominator', 1):
@@ -255,7 +281,7 @@ def run_task():
     splits = get_todays_reverse_splits()
 
     if not splits:
-        print("لا توجد أسهم تقسيم عكسي ليوم اليوم.")
+        print("لا توجد أسهم تقسيم عكسي اليوم.")
         return
 
     updates = []
@@ -269,14 +295,21 @@ def run_task():
         prev_close = stock_data['prev_close']
         prior = get_prior_splits(symbol)
 
-        theoretical = 0.0
+        factor = 1.0
         if num and den:
             factor = den / num if num < den else num / den
-            if prev_close > 0:
-                theoretical = prev_close * factor
-            elif current_price > 0:
-                theoretical = current_price
 
+        # حساب السعر النظري للتقسيم
+        theoretical = 0.0
+        if prev_close > 0:
+            if prev_close < (current_price / (factor * 0.5)) if current_price > 0 else True:
+                theoretical = prev_close * factor
+            else:
+                theoretical = prev_close
+        elif current_price > 0:
+            theoretical = current_price
+
+        # حساب التغير
         change_pct = 0.0
         if theoretical > 0 and current_price > 0:
             change_pct = ((current_price - theoretical) / theoretical) * 100
