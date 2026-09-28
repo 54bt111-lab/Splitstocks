@@ -1,17 +1,11 @@
 import os
+import sys
 import datetime
 import re
-import time
 import requests
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# إعدادات تلجرام
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# متغير عام لتخزين أسهم اليوم المستهدفة
-TODAYS_TARGET_STOCKS = []
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -78,7 +72,6 @@ def is_reverse_split(ratio_str):
     return False
 
 def get_yahoo_live_data(ticker):
-    """جلب بيانات السهم الحية وسعر الإغلاق السابق"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=5m&range=1d"
@@ -88,12 +81,9 @@ def get_yahoo_live_data(ticker):
         price = meta.get('regularMarketPrice') or meta.get('previousClose') or 0.0
         prev_close = meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0
         
-        return {
-            'price': float(price),
-            'prev_close': float(prev_close)
-        }
+        return {'price': float(price), 'prev_close': float(prev_close)}
     except Exception as e:
-        print(f"Error fetching price for {ticker}: {e}")
+        print(f"Error fetching {ticker}: {e}")
         return {'price': 0.0, 'prev_close': 0.0}
 
 def get_prior_splits(ticker):
@@ -102,19 +92,15 @@ def get_prior_splits(ticker):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=5y"
         res = requests.get(url, headers=headers, timeout=12).json()
-        events = res.get('chart', {}).get('result', [{}])[0].get('events', {})
-        splits = events.get('splits', {})
+        splits = res.get('chart', {}).get('result', [{}])[0].get('events', {}).get('splits', {})
         for data in splits.values():
-            num = data.get('numerator', 1)
-            den = data.get('denominator', 1)
-            if num < den:
+            if data.get('numerator', 1) < data.get('denominator', 1):
                 count += 1
     except:
         pass
     return count
 
 def get_todays_reverse_splits():
-    """جلب التقسيمات العكسية المستهدفة ليوم اليوم فقط"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     today = datetime.date.today()
     splits_list = []
@@ -147,136 +133,55 @@ def get_todays_reverse_splits():
         unique[(s['symbol'], s['date'])] = s
     return list(unique.values())
 
-# ==========================================
-# 1. مهمة الساعة 7:00 صباحاً (جلب أسهم اليوم)
-# ==========================================
-def job_7am_morning_check():
-    global TODAYS_TARGET_STOCKS
+def run_task():
     today = datetime.date.today()
-    print(f"[{datetime.datetime.now()}] جاري فحص أسهم التقسيم العكسي ليوم: {today}")
-
     splits = get_todays_reverse_splits()
-    TODAYS_TARGET_STOCKS = splits
 
     if not splits:
-        msg = f"🌅 <b>تقرير الصباح (07:00 AM)</b>\n🗓️ التاريخ: <code>{today}</code>\n\nℹ️ لا توجد أسهم عليها تقسيم عكسي اليوم."
-        send_telegram_message(msg)
+        print("لا توجد أسهم تقسيم عكسي ليوم اليوم.")
         return
-
-    report_items = []
-    for item in splits:
-        symbol = item['symbol']
-        data = get_yahoo_live_data(symbol)
-        price = data['price']
-        prior = get_prior_splits(symbol)
-        ratio_ar = format_ratio_ar(item['ratio'])
-        num, den = extract_ratio_numbers(item['ratio'])
-
-        theoretical = 0.0
-        if price > 0 and num and den:
-            factor = num if num > den else den
-            theoretical = price * factor
-
-        # تخزين سعر التقسيم النظري لاستخدامه في المتابعة
-        item['theoretical'] = theoretical
-        item['prev_close'] = price
-
-        info = (
-            f"🔹 <b>${symbol}</b>\n"
-            f"⚖️ النسبة: <b>{ratio_ar}</b>\n"
-            f"💵 إغلاق أمس: <b>${round(price, 4)}</b>\n"
-            f"📈 السعر النظري المتوقع: <b>${round(theoretical, 2)}</b>\n"
-            f"🔄 تقسيمات سابقة: <b>{prior}</b>"
-        )
-        report_items.append(info)
-
-    msg = (
-        f"🌅 <b>تقرير أسهم التقسيم العكسي اليوم</b>\n"
-        f"🗓️ التاريخ: <code>{today}</code>\n"
-        f"──────────────────\n\n"
-        + "\n\n───────────────\n\n".join(report_items) +
-        "\n\n──────────────────\n"
-        "⏰ سيتم بدء تتبع الأسهم تلقائياً كل 5 دقائق فور افتتاح السوق."
-    )
-    send_telegram_message(msg)
-
-# ==========================================
-# 2. مهمة متابعة التداول (كل 5 دقائق عند الافتتاح)
-# ==========================================
-def job_monitor_market_5min():
-    if not TODAYS_TARGET_STOCKS:
-        return
-
-    now = datetime.datetime.now()
-    # يمكنك تعديل الساعات هنا حسب التوقيت المحلي للتداول (مثلاً بين 13:30 و 20:00 UTC للسوق الأمريكي)
-    # المتابعة تعمل أثناء ساعات العمل
-    print(f"[{now.strftime('%H:%M:%S')}] جاري متابعة حركة الأسهم...")
 
     updates = []
-    for item in TODAYS_TARGET_STOCKS:
+    for item in splits:
         symbol = item['symbol']
         live_data = get_yahoo_live_data(symbol)
         current_price = live_data['price']
-        theoretical = item.get('theoretical', 0.0)
+        prev_close = live_data['prev_close']
+        prior = get_prior_splits(symbol)
+        
+        num, den = extract_ratio_numbers(item['ratio'])
+        theoretical = 0.0
+        if prev_close > 0 and num and den:
+            factor = num if num > den else den
+            theoretical = prev_close * factor
 
-        if current_price == 0:
-            continue
-
-        # حساب نسبة التغير مقارنة بالسعر النظري المتوقع للتقسيم
         change_pct = 0.0
-        if theoretical > 0:
+        if theoretical > 0 and current_price > 0:
             change_pct = ((current_price - theoretical) / theoretical) * 100
 
         status_emoji = "🟢" if change_pct >= 0 else "🔴"
-        
-        # التنبيه في حالة الهبوط الحاد (أكثر من 30%)
-        alert_str = ""
-        if change_pct <= -30:
-            alert_str = "\n🔥 <b>تنبيه: هبوط أكثر من 30% (فرصة ارتداد محتملة)!</b>"
+        alert_str = "\n🔥 <b>تنبيه: هبوط أكثر من 30% (فرصة ارتداد محتملة)!</b>" if change_pct <= -30 else ""
 
         info = (
             f"🔹 <b>${symbol}</b>\n"
+            f"⚖️ النسبة: <b>{format_ratio_ar(item['ratio'])}</b>\n"
             f"💵 السعر الحالي: <b>${round(current_price, 4)}</b>\n"
-            f"🎯 السعر النظري: <b>${round(theoretical, 2)}</b>\n"
-            f"{status_emoji} التغير عن النظري: <b>{round(change_pct, 2)}%</b>"
+            f"🎯 السعر النظري للتقسيم: <b>${round(theoretical, 2)}</b>\n"
+            f"{status_emoji} التغير عن النظري: <b>{round(change_pct, 2)}%</b>\n"
+            f"🔄 تقسيمات سابقة: <b>{prior}</b>"
             f"{alert_str}"
         )
         updates.append(info)
 
     if updates:
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         msg = (
-            f"📊 <b>تحديث حركة الأسهم (كل 5 دقائق)</b>\n"
-            f"⏰ الوقت: <code>{now.strftime('%H:%M:%S')}</code>\n"
+            f"📊 <b>متابعة أسهم التقسيم العكسي اليوم</b>\n"
+            f"⏰ الوقت: <code>{now_str} UTC</code>\n"
             f"──────────────────\n\n"
             + "\n\n───────────────\n\n".join(updates)
         )
         send_telegram_message(msg)
 
-# ==========================================
-# المحرك الرئيسي (Main Loop)
-# ==========================================
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح...")
-    
-    last_7am_run = None
-    last_5min_run = None
-
-    while True:
-        now = datetime.datetime.now()
-        
-        # 1. التجميع الصباحي الساعة 7:00 صباحاً (مرة واحدة يومياً)
-        if now.hour == 7 and now.minute == 0:
-            if last_7am_run != now.date():
-                job_7am_morning_check()
-                last_7am_run = now.date()
-
-        # 2. المتابعة كل 5 دقائق خلال ساعات التداول
-        # مثال: السوق الأمريكي من 16:30 إلى 23:00 بتوقيت مكة المكرمة (تعديل الساعات حسب منطقتك)
-        # يمكنك إزالة شرط الساعات if إذا كنت تريد التشغيل الدائم كل 5 دقائق
-        if True: # أضف شرط ساعات التداول هنا إذا أردت
-            if last_5min_run is None or (now - last_5min_run).total_seconds() >= 300: # 300 ثانية = 5 دقائق
-                if TODAYS_TARGET_STOCKS: # يعمل فقط إذا كان هناك أسهم مستهدفة اليوم
-                    job_monitor_market_5min()
-                last_5min_run = now
-
-        time.sleep(10) # فحص كل 10 ثوانٍ للتأكد من المواعيد
+    run_task()
