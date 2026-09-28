@@ -129,7 +129,7 @@ def get_todays_reverse_splits():
 
     return list(splits_dict.values())
 
-# 2. جلب بيانات TradingView وتصفية الأصول
+# 2. جلب بيانات TradingView وتصفية الأصول غير المرغوبة
 def get_tradingview_stock_data(ticker):
     url = "https://scanner.tradingview.com/america/scan"
     payload = {
@@ -173,7 +173,6 @@ def get_tradingview_stock_data(ticker):
                 entity_type = str(cols[6] or '').lower()
                 entity_subtype = str(cols[7] or '').lower()
 
-                # استبعاد الصناديق والمحافظ والأسهم الممتازة
                 invalid_types = ['fund', 'etf', 'cef', 'right', 'warrant', 'bond']
                 if any(inv in entity_type or inv in entity_subtype for inv in invalid_types):
                     data['is_valid_stock'] = False
@@ -201,11 +200,8 @@ def get_prior_splits_count(ticker):
     return count
 
 def run_task():
-    print("🚀 بدء تنفيذ الفحص اليومي للأسهم بالصيغة المعتمدة...")
     splits = get_todays_reverse_splits()
-
     if not splits:
-        send_telegram_message("ℹ️ لا توجد أسهم تقسيم عكسي مسجلة اليوم.")
         return
 
     updates = []
@@ -218,7 +214,6 @@ def run_task():
         if not tv_data['is_valid_stock']:
             continue
 
-        # معامل التقسيم
         factor = (den / num) if (num and den and num < den) else 1.0
 
         current_price = tv_data['price']
@@ -247,7 +242,7 @@ def run_task():
 
         price_curr_str = f"{round(current_price, 4)}$" if current_price > 0 else "غير متوفر"
 
-        # 📌 القالب المعتمد المكتمل بناءً على المخرجات النهائية
+        # 📌 القالب المطلوب فقط (بدون أي عناوين أو مقدمات)
         info = (
             f"🔹 <b>${symbol}</b>\n"
             f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
@@ -262,13 +257,8 @@ def run_task():
         updates.append(info)
 
     if updates:
-        now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        msg = (
-            f"📊 <b>تقرير متابعة أسهم التقسيم العكسي اليوم</b>\n"
-            f"⏰ الوقت: <code>{now_str} UTC</code>\n"
-            f"──────────────────\n\n"
-            + "\n\n───────────────\n\n".join(updates)
-        )
+        # إرسال المخرجات المباشرة فقط
+        msg = "\n\n───────────────\n\n".join(updates)
         send_telegram_message(msg)
 
 if __name__ == "__main__":
