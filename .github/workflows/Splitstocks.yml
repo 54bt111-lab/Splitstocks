@@ -1,20 +1,25 @@
-name: SplitStocks Reverse Split Bot
+name: Run Reverse Split Bot
 
 on:
   schedule:
-    - cron: '15 19 * * 0'
-  workflow_dispatch:
+    # 1. التشغيل اليومي لتقرير الصباح الساعة 07:03 صباحاً بتوقيت السعودية (04:03 UTC)
+    - cron: '3 4 * * *'
+    
+    # 2. المتابعة كل 5 دقائق أثناء أوقات التداول للسوق الأمريكي (من 4:30 مساءً إلى 11:00 مساءً بتوقيت السعودية)
+    # توازي من 13:30 إلى 20:00 بتوقيت UTC من الاثنين للجمعة
+    - cron: '*/5 13-20 * * 1-5'
+
+  workflow_dispatch: # يتيح لك التشغيل اليدوي في أي وقت للفيّس أو التجربة
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
@@ -25,7 +30,7 @@ jobs:
 
       - name: Run Reverse Split Search
         env:
-          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+        run: |
+          python main.py
