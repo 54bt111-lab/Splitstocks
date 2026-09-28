@@ -108,28 +108,7 @@ def get_todays_reverse_splits():
     today_str = today.strftime("%Y-%m-%d")
     splits_dict = {}
 
-    # 1. FMP API Calendar
-    if FMP_API_KEY:
-        try:
-            url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={today_str}&to={today_str}&apikey={FMP_API_KEY}"
-            res = requests.get(url, timeout=12).json()
-            if isinstance(res, list):
-                for item in res:
-                    symbol = item.get('symbol', '').upper()
-                    num = float(item.get('numerator', 0))
-                    den = float(item.get('denominator', 0))
-                    if symbol and num > 0 and den > 0 and num < den:
-                        splits_dict[symbol] = {
-                            'symbol': symbol,
-                            'date': today,
-                            'num': num,
-                            'den': den,
-                            'raw_text': f"{num} for {den}"
-                        }
-        except Exception as e:
-            print("FMP Calendar error:", e)
-
-    # 2. StockAnalysis Scraping
+    # StockAnalysis Scraping
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         url = "https://stockanalysis.com/actions/splits/"
@@ -159,10 +138,31 @@ def get_todays_reverse_splits():
     except Exception as e:
         print("StockAnalysis error:", e)
 
+    # FMP Calendar API
+    if FMP_API_KEY:
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={today_str}&to={today_str}&apikey={FMP_API_KEY}"
+            res = requests.get(url, timeout=12).json()
+            if isinstance(res, list):
+                for item in res:
+                    symbol = item.get('symbol', '').upper()
+                    num = float(item.get('numerator', 0))
+                    den = float(item.get('denominator', 0))
+                    if symbol and num > 0 and den > 0 and num < den and symbol not in splits_dict:
+                        splits_dict[symbol] = {
+                            'symbol': symbol,
+                            'date': today,
+                            'num': num,
+                            'den': den,
+                            'raw_text': f"{num} for {den}"
+                        }
+        except Exception as e:
+            print("FMP Calendar error:", e)
+
     return list(splits_dict.values())
 
 # ==========================================
-# 2. جلب معلومات السهم عبر TradingView Scanner API
+# 2. جلب معلومات السهم والأسعار متعدد الموردين
 # ==========================================
 def get_stock_data(ticker, ratio_num, ratio_den):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -178,75 +178,61 @@ def get_stock_data(ticker, ratio_num, ratio_den):
     if ratio_num and ratio_den and ratio_num > 0 and ratio_den > 0:
         factor = ratio_den / ratio_num if ratio_num < ratio_den else ratio_num / ratio_den
 
-    # 1. TradingView Scanner API (الخيار الأسرع والأدق)
+    # 1. TradingView Scanner API
     try:
         tv_payload = {
             "filter": [{"left": "name", "operation": "equal", "right": ticker}],
-            "columns": [
-                "name",
-                "close",
-                "change",
-                "sector",
-                "industry",
-                "float_shares_outstanding",
-                "total_shares_outstanding"
-            ]
+            "columns": ["name", "close", "change", "sector", "industry", "float_shares_outstanding"]
         }
-        tv_req = requests.post(
-            "https://scanner.tradingview.com/america/scan",
-            json=tv_payload,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
+        tv_req = requests.post("https://scanner.tradingview.com/america/scan", json=tv_payload, headers=headers, timeout=8)
         if tv_req.status_code == 200:
-            tv_json = tv_req.json().get("data", [])
-            if tv_json:
-                row = tv_json[0].get("d", [])
+            res_data = tv_req.json().get("data", [])
+            if res_data:
+                row = res_data[0].get("d", [])
                 if len(row) >= 6:
-                    data['price'] = float(row[1]) if row[1] is not None else 0.0
+                    if row[1] is not None and float(row[1]) > 0:
+                        data['price'] = float(row[1])
                     raw_sec = str(row[3]) if row[3] else ""
-                    
-                    if raw_sec and raw_sec.lower() != "peers":
+                    if raw_sec and raw_sec.lower() not in ["peers", "none", "null"]:
                         data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
-                    
                     raw_ind = str(row[4]) if row[4] else ""
-                    if raw_ind and len(raw_ind) > 3:
+                    if raw_ind and raw_ind.lower() not in ["peers", "none", "null"]:
                         data['industry'] = raw_ind
 
                     raw_float = row[5]
                     if raw_float and raw_float > 0:
-                        calc_float = raw_float / factor if raw_float > 20_000_000 and factor > 1 else raw_float
+                        calc_float = raw_float / factor if (raw_float > 20_000_000 and factor > 1) else raw_float
                         data['post_split_float'] = format_shares_count(calc_float)
     except Exception as e:
         print(f"TradingView fetch error for {ticker}: {e}")
 
-    # 2. Yahoo Chart v8 API (لجلب سعر الإغلاق السابق)
+    # 2. Yahoo Chart v8 API (جلب السعر والإغلاق السابق)
     try:
-        for host in ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]:
-            y_url = f"https://{host}/v8/finance/chart/{ticker}?interval=1d&range=5d"
+        for domain in ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]:
+            y_url = f"https://{domain}/v8/finance/chart/{ticker}?interval=1d&range=5d"
             y_res = requests.get(y_url, headers=headers, timeout=8)
             if y_res.status_code == 200:
                 meta = y_res.json().get('chart', {}).get('result', [{}])[0].get('meta', {})
                 if meta:
                     p = float(meta.get('regularMarketPrice') or 0.0)
                     pc = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
-                    if not data['price'] and p > 0:
+                    if data['price'] == 0 and p > 0:
                         data['price'] = p
                     if pc > 0:
                         data['prev_close'] = pc
                     break
     except Exception as e:
-        print(f"Yahoo Chart v8 error for {ticker}: {e}")
+        print(f"Yahoo Chart error for {ticker}: {e}")
 
     # 3. FMP API
-    if FMP_API_KEY and (data['price'] == 0 or data['sector'] == 'غير متوفر'):
+    if FMP_API_KEY and (data['price'] == 0 or data['prev_close'] == 0 or data['sector'] == 'غير متوفر'):
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_API_KEY}"
             q_res = requests.get(q_url, timeout=8).json()
             if isinstance(q_res, list) and len(q_res) > 0:
-                if not data['price']:
+                if data['price'] == 0:
                     data['price'] = float(q_res[0].get('price', 0.0))
-                if not data['prev_close']:
+                if data['prev_close'] == 0:
                     data['prev_close'] = float(q_res[0].get('previousClose', 0.0))
 
             p_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
@@ -258,7 +244,21 @@ def get_stock_data(ticker, ratio_num, ratio_den):
                 if data['industry'] == 'غير متوفر':
                     data['industry'] = p_res[0].get('industry', 'غير متوفر')
         except Exception as e:
-            print(f"FMP error for {ticker}: {e}")
+            print(f"FMP fetch error for {ticker}: {e}")
+
+    # 4. StockAnalysis API Fallback
+    if data['price'] == 0:
+        try:
+            sa_url = f"https://stockanalysis.com/api/quotes/s/{ticker.lower()}"
+            sa_res = requests.get(sa_url, headers=headers, timeout=8)
+            if sa_res.status_code == 200:
+                sa_data = sa_res.json().get("data", {})
+                if sa_data:
+                    data['price'] = float(sa_data.get("price", 0.0))
+                    if data['prev_close'] == 0:
+                        data['prev_close'] = float(sa_data.get("close", 0.0))
+        except Exception as e:
+            print(f"StockAnalysis API error for {ticker}: {e}")
 
     return data
 
@@ -277,11 +277,10 @@ def get_prior_splits(ticker):
     return count
 
 def run_task():
-    today = datetime.date.today()
     splits = get_todays_reverse_splits()
 
     if not splits:
-        print("لا توجد أسهم تقسيم عكسي اليوم.")
+        print("لا توجد أسهم تقسيم عكسي ليوم اليوم.")
         return
 
     updates = []
@@ -296,20 +295,27 @@ def run_task():
         prior = get_prior_splits(symbol)
 
         factor = 1.0
-        if num and den:
-            factor = den / num if num < den else num / den
+        if num and den and num < den:
+            factor = den / num
 
-        # حساب السعر النظري للتقسيم
+        # ==========================================
+        # حساب السعر النظري للتقسيم بشكل دقيق جداً
+        # ==========================================
         theoretical = 0.0
-        if prev_close > 0:
-            if prev_close < (current_price / (factor * 0.5)) if current_price > 0 else True:
-                theoretical = prev_close * factor
+        if prev_close > 0 and factor > 1:
+            price_unadjusted = prev_close * factor
+            if current_price > 0:
+                # التحقق الذكي: هل مزود البيانات عدّل الإغلاق السابق تلقائياً أم لا؟
+                if abs(price_unadjusted - current_price) < abs(prev_close - current_price):
+                    theoretical = price_unadjusted
+                else:
+                    theoretical = prev_close
             else:
-                theoretical = prev_close
+                theoretical = price_unadjusted if prev_close < 15.0 else prev_close
         elif current_price > 0:
             theoretical = current_price
 
-        # حساب التغير
+        # حساب التغير عن السعر النظري
         change_pct = 0.0
         if theoretical > 0 and current_price > 0:
             change_pct = ((current_price - theoretical) / theoretical) * 100
@@ -319,11 +325,15 @@ def run_task():
 
         tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
+        # تنسيق مخرجات النصوص بشكل أنيق
+        price_disp = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
+        theoretical_disp = f"${round(theoretical, 4)}" if theoretical > 0 else "غير متوفر"
+
         info = (
             f"🔹 <b>${symbol}</b>\n"
             f"⚖️ النسبة: <b>{format_ratio_ar(num, den, item['raw_text'])}</b>\n"
-            f"💵 السعر الحالي: <b>${round(current_price, 4)}</b>\n"
-            f"🎯 السعر النظري للتقسيم: <b>${round(theoretical, 2)}</b>\n"
+            f"💵 السعر الحالي: <b>{price_disp}</b>\n"
+            f"🎯 السعر النظري للتقسيم: <b>{theoretical_disp}</b>\n"
             f"📊 الفلوت المتوقع (Float): <b>{stock_data['post_split_float']}</b>\n"
             f"🏢 القطاع: <b>{stock_data['sector']}</b>\n"
             f"🛠️ نشاط السهم (Industry): <b>{stock_data['industry']}</b>\n"
