@@ -47,7 +47,8 @@ INDUSTRY_MAP = {
     "Semiconductors": "أشباه الموصلات",
     "Internet Software/Services": "برمجيات وخدمات الإنترنت",
     "Real Estate Development": "التطوير العقاري",
-    "Financial Publishing/Services": "الخدمات المالية"
+    "Financial Publishing/Services": "الخدمات المالية",
+    "Engineering & Construction": "الهندسة والإنشاءات"
 }
 
 def send_telegram_message(message):
@@ -170,7 +171,8 @@ def get_tradingview_stock_data(ticker):
             "postmarket_close",
             "postmarket_change",
             "postmarket_volume",
-            "volume"
+            "volume",
+            "market_cap_basic"
         ]
     }
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -183,6 +185,7 @@ def get_tradingview_stock_data(ticker):
         'sector': 'غير متوفر',
         'industry': 'غير متوفر',
         'volume': 0.0,
+        'market_cap': 0.0,
         'pm_price': 0.0, 'pm_change': 0.0, 'pm_vol': 0.0,
         'ah_price': 0.0, 'ah_change': 0.0, 'ah_vol': 0.0
     }
@@ -217,6 +220,7 @@ def get_tradingview_stock_data(ticker):
                 data['ah_change'] = float(cols[13] or 0.0)
                 data['ah_vol'] = float(cols[14] or 0.0)
                 data['volume'] = float(cols[15] or 0.0)
+                data['market_cap'] = float(cols[16] or 0.0)
     except Exception as e:
         print(f"TradingView API Error ({ticker}): {e}")
 
@@ -235,6 +239,70 @@ def get_prior_splits_count(ticker):
     except:
         pass
     return count
+
+def get_3m_candles(ticker, limit=9):
+    """يجلب شموع 1 دقيقة (مع البري/بوست ماركت) ويجمعها إلى شموع 3 دقائق مكتملة"""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+               f"?interval=1m&range=1d&includePrePost=true")
+        res = requests.get(url, headers=headers, timeout=8).json()
+        r = res['chart']['result'][0]
+        ts = r['timestamp']
+        q = r['indicators']['quote'][0]
+        buckets = {}
+        for i, t in enumerate(ts):
+            o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
+            if None in (o, h, l, c, v):
+                continue
+            key = t - (t % 180)
+            b = buckets.get(key)
+            if not b:
+                buckets[key] = {'o': o, 'h': h, 'l': l, 'c': c, 'v': v}
+            else:
+                b['h'] = max(b['h'], h)
+                b['l'] = min(b['l'], l)
+                b['c'] = c
+                b['v'] += v
+        candles = [buckets[k] for k in sorted(buckets)]
+        candles = candles[:-1]  # استبعاد الشمعة الجارية غير المكتملة
+        return candles[-limit:]
+    except Exception as e:
+        print(f"3m candles error ({ticker}):", e)
+        return []
+
+def analyze_3m_trend(ticker):
+    """يحلل آخر 3 شموع (3د) مقابل متوسط الشموع السابقة"""
+    candles = get_3m_candles(ticker, 9)
+    if len(candles) < 6:
+        return None
+    last3 = candles[-3:]
+    prev = candles[:-3]
+    avg_prev_vol = sum(c['v'] for c in prev) / len(prev)
+    if avg_prev_vol <= 0:
+        return None
+
+    vol_ratio = last3[-1]['v'] / avg_prev_vol
+    vol_rising = last3[-1]['v'] > last3[-2]['v'] and vol_ratio >= 1.5
+    closes_up = last3[0]['c'] < last3[1]['c'] < last3[2]['c']
+    closes_down = last3[0]['c'] > last3[1]['c'] > last3[2]['c']
+    higher_lows = last3[0]['l'] < last3[1]['l'] < last3[2]['l']
+    move_pct = ((last3[-1]['c'] / last3[0]['o']) - 1) * 100 if last3[0]['o'] > 0 else 0.0
+
+    direction = None
+    if closes_up and vol_rising and last3[-1]['c'] > last3[-1]['o']:
+        direction = "up"
+    elif closes_down and vol_rising and last3[-1]['c'] < last3[-1]['o']:
+        direction = "down"
+
+    return {
+        'direction': direction,
+        'vol_ratio': vol_ratio,
+        'move_pct': move_pct,
+        'higher_lows': higher_lows,
+        'last_close': last3[-1]['c'],
+        'last_vol': last3[-1]['v']
+    }
 
 def run_task():
     watchlist = load_watchlist()
@@ -281,6 +349,8 @@ def run_task():
             raw_float = tv_data['raw_float']
             total_shares = tv_data['total_shares']
             base_shares = raw_float if raw_float > 0 else total_shares
+            if base_shares <= 0 and tv_data['market_cap'] > 0 and current_price > 0:
+                base_shares = tv_data['market_cap'] / current_price
 
             if base_shares > 0:
                 post_split_float = (base_shares / factor) if (base_shares > 2_000_000 and factor > 1) else base_shares
@@ -337,6 +407,7 @@ def run_task():
 
         float_shares = data['raw_float'] or data['total_shares']
         turnover = (vol / float_shares) if float_shares > 0 else 0.0
+        print(f"DEBUG {sym}: pm_vol={data['pm_vol']}, volume={data['volume']}, raw_float={data['raw_float']}, total_shares={data['total_shares']}")
 
         # تنبيه فوليوم ملفت وتدوير فلوت
         if turnover >= 0.5 and not watchlist[sym].get("alerted_turnover"):
@@ -362,6 +433,31 @@ def run_task():
                 f"الحجم المتداول: <b>{int(vol):,}</b> سهم\n"
                 f"💡 <i>منطقة ارتداد مضاربي متوقعة مع ارتفاع الفوليوم.</i>"
             )
+            send_telegram_message(msg)
+
+        # مراقبة اتجاه شموع 3 دقائق مع الفوليوم
+        trend = analyze_3m_trend(sym)
+        now_ts = datetime.datetime.utcnow().timestamp()
+        if trend and trend['direction'] and now_ts - watchlist[sym].get("last_trend_alert", 0) >= 900:
+            watchlist[sym]["last_trend_alert"] = now_ts
+            if trend['direction'] == "up":
+                msg = (
+                    f"📈 <b>فرصة مضاربة محتملة ({sym})</b>\n"
+                    f"اتجاه شموع 3د: <b>صاعد مع ارتفاع فوليوم</b>\n"
+                    f"الحركة (آخر 3 شموع): <b>{round(trend['move_pct'], 2)}%</b>\n"
+                    f"فوليوم آخر شمعة: <b>{int(trend['last_vol']):,}</b> ({round(trend['vol_ratio'], 1)}x المتوسط)\n"
+                    f"قيعان صاعدة: <b>{'نعم' if trend['higher_lows'] else 'لا'}</b>\n"
+                    f"السعر: <b>{round(trend['last_close'], 4)}$</b>\n"
+                    f"الشارت: <a href='https://www.tradingview.com/chart/?symbol={sym}'>TradingView</a>"
+                )
+            else:
+                msg = (
+                    f"🔻 <b>تحذير ضغط بيعي ({sym})</b>\n"
+                    f"اتجاه شموع 3د: <b>هابط مع ارتفاع فوليوم</b>\n"
+                    f"الحركة (آخر 3 شموع): <b>{round(trend['move_pct'], 2)}%</b>\n"
+                    f"فوليوم آخر شمعة: <b>{int(trend['last_vol']):,}</b> ({round(trend['vol_ratio'], 1)}x المتوسط)\n"
+                    f"السعر: <b>{round(trend['last_close'], 4)}$</b>"
+                )
             send_telegram_message(msg)
 
     # حفظ السجل المحين
