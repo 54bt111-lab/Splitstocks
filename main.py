@@ -9,70 +9,46 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-# قاموس ترجمة القطاعات
+# قاموس ترجمة القطاعات من TradingView
 SECTOR_MAP = {
     "Health Technology": "الرعاية الصحية - تكنولوجيا",
-    "Healthcare": "الرعاية الصحية (Healthcare)",
     "Health Services": "الخدمات الصحية",
-    "Electronic Technology": "التكنولوجيا الإلكترونية",
-    "Technology Services": "خدمات التكنولوجيا",
-    "Technology": "التكنولوجيا (Technology)",
-    "Finance": "الخدمات المالية",
-    "Financial Services": "الخدمات المالية",
-    "Financial": "الخدمات المالية",
     "Commercial Services": "الخدمات التجارية",
     "Consumer Durables": "السلع الاستهلاكية المعمرة",
     "Consumer Non-Durables": "السلع الاستهلاكية غير المعمرة",
-    "Consumer Cyclical": "السلع الاستهلاكية الدورية",
-    "Consumer Defensive": "السلع الاستهلاكية الدفاعية",
     "Consumer Services": "الخدمات الاستهلاكية",
+    "Electronic Technology": "التكنولوجيا الإلكترونية",
+    "Technology Services": "خدمات التكنولوجيا",
+    "Finance": "الخدمات المالية",
     "Energy Minerals": "معادن الطاقة",
-    "Energy": "الطاقة (Energy)",
     "Non-Energy Minerals": "المعادن غير الطاقية",
     "Process Industries": "الصناعات التحويلية",
     "Producer Manufacturing": "التصنيع الإنتاجي",
-    "Industrials": "الصناعة (Industrials)",
     "Industrial Services": "الخدمات الصناعية",
-    "Basic Materials": "المواد الأساسية",
-    "Real Estate": "العقارات (Real Estate)",
     "Utilities": "المرافق العامة",
     "Retail Trade": "تجارة التجزئة",
     "Transportation": "النقل والمواصلات",
-    "Communications": "الاتصالات",
-    "Communication Services": "خدمات الاتصالات"
+    "Communications": "الاتصالات"
 }
 
 # قاموس ترجمة الأنشطة
 INDUSTRY_MAP = {
     "Software - Infrastructure": "البرمجيات - البنية التحتية",
     "Software - Application": "البرمجيات - التطبيقات",
-    "Software - Interactive": "البرمجيات التفاعلية",
     "Biotechnology": "التكنولوجيا الحيوية (Biotechnology)",
-    "Medical Devices": "الأجهزة الطبية",
-    "Drug Manufacturers - General": "صناعة الأدوية - عام",
-    "Drug Manufacturers - Specialty & Generic": "صناعة الأدوية - متخصصة",
-    "Healthcare Plans": "الرعاية الصحية - التأمين",
-    "Diagnostics & Research": "التشخيص والأبحاث الطبية",
-    "Medical Care Facilities": "منشآت الرعاية الطبية",
-    "Medical Instruments & Supplies": "المستلزمات والأدوات الطبية",
-    "Health Information Services": "خدمات المعلومات الصحية",
-    "Auto Manufacturers": "صناعة السيارات",
-    "Auto Parts": "قطع غيار السيارات",
-    "Capital Goods": "السلع الرأسمالية",
-    "Electrical Equipment & Parts": "المعدات والقطع الكهربائية",
-    "Specialty Industrial Machinery": "الآلات الصناعية المتخصصة",
+    "Medical Specialties": "التخصصات الطبية",
+    "Pharmaceuticals: Major": "صناعة الأدوية - الكبرى",
+    "Pharmaceuticals: Generic": "صناعة الأدوية - العامة",
+    "Pharmaceuticals: Other": "صناعة الأدوية - أخرى",
+    "Auto Parts: OEM": "قطع غيار السيارات",
+    "Motor Vehicles": "صناعة السيارات",
+    "Industrial Machinery": "الآلات الصناعية",
     "Aerospace & Defense": "الفضاء والدفاع",
     "Semiconductors": "أشباه الموصلات",
-    "Consumer Electronics": "الإلكترونيات الاستهلاكية",
-    "Information Technology Services": "خدمات تكنولوجيا المعلومات",
-    "Internet Content & Information": "محتوى ومعلومات الإنترنت",
-    "Solar": "الطاقة الشمسية",
-    "Oil & Gas E&P": "النفط والغاز - استكشاف وإنتاج",
-    "Oil & Gas Equipment & Services": "معدات وخدمات النفط والغاز",
-    "Real Estate Services": "الخدمات العقارية",
-    "Capital Markets": "أسواق المال والوساطة",
-    "Specialty Retail": "التجزئة المتخصصة",
-    "Internet Retail": "التجزئة عبر الإنترنت",
+    "Internet Software/Services": "برمجيات وخدمات الإنترنت",
+    "Major Telecommunications": "الاتصالات الرئيسية",
+    "Real Estate Development": "التطوير العقاري",
+    "Financial Publishing/Services": "الخدمات المالية"
 }
 
 def send_telegram_message(message):
@@ -175,61 +151,57 @@ def get_todays_reverse_splits():
     return list(splits_dict.values())
 
 # ==========================================
-# 2. جلب بيانات السهم بدون Crumb المباشر من Yahoo v7 & v8 & Search
+# 2. جلب كافة بيانات السهم المباشرة عبر TradingView Scanner API
 # ==========================================
-def get_stock_data(ticker, ratio_num, ratio_den):
+def get_tradingview_stock_data(ticker):
+    url = "https://scanner.tradingview.com/america/scan"
+    payload = {
+        "filter": [
+            {"left": "name", "operation": "equal", "right": ticker.upper()}
+        ],
+        "columns": [
+            "name",
+            "close",
+            "change",
+            "change_abs",
+            "market_cap_basic",
+            "float_shares_outstanding",
+            "sector",
+            "industry"
+        ]
+    }
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
-    
+
     data = {
         'sector': 'غير متوفر',
         'industry': 'غير متوفر',
         'price': 0.0,
-        'prev_close': 0.0,
-        'raw_float': 0.0
+        'change_pct': 0.0,
+        'raw_float': 0.0,
+        'market_cap': 0.0
     }
 
-    # أ) جلب السعر، الإغلاق السابقة والفلوت عبر v7/finance/quote (مفتوح بدون أذونات)
     try:
-        q_url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
-        q_res = requests.get(q_url, headers=headers, timeout=8)
-        if q_res.status_code == 200:
-            q_data = q_res.json().get('quoteResponse', {}).get('result', [{}])[0]
-            data['price'] = float(q_data.get('regularMarketPrice') or 0.0)
-            data['prev_close'] = float(q_data.get('regularMarketPreviousClose') or 0.0)
-            data['raw_float'] = float(q_data.get('floatShares') or q_data.get('sharesOutstanding') or 0.0)
-    except Exception as e:
-        print(f"Yahoo Quote v7 Error for {ticker}: {e}")
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        if res.status_code == 200:
+            res_json = res.json()
+            rows = res_json.get("data", [])
+            if rows:
+                cols = rows[0].get("d", [])
+                data['price'] = float(cols[1] or 0.0)
+                data['change_pct'] = float(cols[2] or 0.0)
+                data['market_cap'] = float(cols[4] or 0.0)
+                data['raw_float'] = float(cols[5] or 0.0)
 
-    # ب) الاحتياط للسعر عبر v8/finance/chart
-    if data['price'] == 0:
-        try:
-            c_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
-            c_res = requests.get(c_url, headers=headers, timeout=8)
-            if c_res.status_code == 200:
-                meta = c_res.json().get('chart', {}).get('result', [{}])[0].get('meta', {})
-                data['price'] = float(meta.get('regularMarketPrice') or 0.0)
-                if data['prev_close'] == 0:
-                    data['prev_close'] = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
-        except Exception as e:
-            print(f"Yahoo Chart v8 Error for {ticker}: {e}")
-
-    # ج) جلب القطاع والنشاط عبر Search API (مفتوح بدون أذونات)
-    try:
-        s_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={ticker}"
-        s_res = requests.get(s_url, headers=headers, timeout=8)
-        if s_res.status_code == 200:
-            quotes = s_res.json().get('quotes', [])
-            for q in quotes:
-                if q.get('symbol', '').upper() == ticker.upper():
-                    raw_sec = q.get('sectorDisp') or q.get('sector') or ''
-                    raw_ind = q.get('industryDisp') or q.get('industry') or ''
-                    if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
-                    if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
-                    break
+                raw_sec = cols[6] or ''
+                raw_ind = cols[7] or ''
+                
+                if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
     except Exception as e:
-        print(f"Yahoo Search Error for {ticker}: {e}")
+        print(f"TradingView API Error for {ticker}: {e}")
 
     return data
 
@@ -248,7 +220,7 @@ def get_prior_splits(ticker):
     return count
 
 def run_task():
-    print("🚀 بدء تشغيل السكربت بفحص البيانات...")
+    print("🚀 بدء تشغيل السكربت واستدعاء بيانات TradingView...")
     splits = get_todays_reverse_splits()
 
     if not splits:
@@ -269,40 +241,32 @@ def run_task():
         num = item['num']
         den = item['den']
 
-        stock_data = get_stock_data(symbol, num, den)
-        current_price = stock_data['price']
-        prev_close = stock_data['prev_close']
+        tv_data = get_tradingview_stock_data(symbol)
+        current_price = tv_data['price']
+        change_pct = tv_data['change_pct']
         prior = get_prior_splits(symbol)
 
         factor = 1.0
         if num and den and num < den:
             factor = den / num
 
+        # حساب السعر النظري بناءً على سعر TradingView والتغير اليومي المباشر
         theoretical_price = 0.0
-        post_split_current = 0.0
-
-        if current_price > 0 and prev_close > 0:
-            if prev_close < current_price * 4.0 and prev_close < 3.0:
-                theoretical_price = prev_close * factor
-                post_split_current = current_price * factor
-            elif prev_close >= current_price * 4.0 or prev_close >= 3.0:
-                theoretical_price = prev_close
-                post_split_current = current_price * factor if current_price < 3.0 else current_price
+        if current_price > 0:
+            if change_pct != -100:
+                theoretical_price = current_price / (1 + (change_pct / 100.0))
             else:
-                theoretical_price = prev_close * factor
-                post_split_current = current_price * factor
-        elif current_price > 0:
-            post_split_current = current_price * factor if current_price < 3.0 else current_price
-            theoretical_price = post_split_current
+                theoretical_price = current_price
 
-        change_pct = 0.0
-        if theoretical_price > 0 and post_split_current > 0:
-            change_pct = ((post_split_current - theoretical_price) / theoretical_price) * 100
+        # الفلوت المباشر من TradingView
+        raw_float = tv_data['raw_float']
+        market_cap = tv_data['market_cap']
 
-        raw_float = stock_data['raw_float']
         if raw_float > 0:
-            calc_float = raw_float / factor if raw_float > 10_000_000 and factor > 1 else raw_float
-            post_split_float_str = format_shares_count(calc_float)
+            post_split_float_str = format_shares_count(raw_float)
+        elif market_cap > 0 and current_price > 0:
+            est_shares = market_cap / current_price
+            post_split_float_str = f"~{format_shares_count(est_shares)} (تقديري)"
         else:
             post_split_float_str = "غير متوفر"
 
@@ -314,8 +278,8 @@ def run_task():
         price_disp = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
         theoretical_disp = f"${round(theoretical_price, 2)}" if theoretical_price > 0 else "غير متوفر"
 
-        clean_sector = html.escape(stock_data['sector'])
-        clean_industry = html.escape(stock_data['industry'])
+        clean_sector = html.escape(tv_data['sector'])
+        clean_industry = html.escape(tv_data['industry'])
         clean_ratio = html.escape(format_ratio_ar(num, den, item['raw_text']))
 
         info = (
@@ -326,7 +290,7 @@ def run_task():
             f"📊 الفلوت المتوقع (Float): <b>{post_split_float_str}</b>\n"
             f"🏢 القطاع: <b>{clean_sector}</b>\n"
             f"🛠️ نشاط السهم (Industry): <b>{clean_industry}</b>\n"
-            f"{status_emoji} التغير عن النظري: <b>{round(change_pct, 2)}%</b>\n"
+            f"{status_emoji} التغير اليومي: <b>{round(change_pct, 2)}%</b>\n"
             f"🔄 تقسيمات سابقة: <b>{prior}</b>\n"
             f"📈 الشارت: <a href='{tv_url}'>TradingView Chart</a>"
             f"{alert_str}"
@@ -336,7 +300,7 @@ def run_task():
     if updates:
         now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         msg = (
-            f"📊 <b>متابعة أسهم التقسيم العكسي اليوم</b>\n"
+            f"📊 <b>متابعة أسهم التقسيم العكسي اليوم (بيانات TradingView)</b>\n"
             f"⏰ الوقت: <code>{now_str} UTC</code>\n"
             f"──────────────────\n\n"
             + "\n\n───────────────\n\n".join(updates)
