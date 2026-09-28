@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import datetime
 import re
 import html
@@ -9,14 +8,6 @@ import requests
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# وقت الفحص بالثواني (مثلاً 180 ثانية = 3 دقائق)
-CHECK_INTERVAL_SECONDS = 180
-
-# عتبات التنبيهات اللحظية (نسب مئوية)
-ALERT_PUMP_THRESHOLD = 10.0   # تنبيه عند صعود السهم أكثر من 10%
-ALERT_DUMP_THRESHOLD = -15.0  # تنبيه عند هبوط السهم أكثر من 15%
-
-# قاموس ترجمة القطاعات
 SECTOR_MAP = {
     "Health Technology": "الرعاية الصحية - تكنولوجيا",
     "Health Services": "الخدمات الصحية",
@@ -45,23 +36,19 @@ INDUSTRY_MAP = {
     "Medical Specialties": "التخصصات الطبية",
     "Pharmaceuticals: Major": "صناعة الأدوية - الكبرى",
     "Pharmaceuticals: Generic": "صناعة الأدوية - العامة",
-    "Pharmaceuticals: Other": "صناعة الأدوية - أخرى",
     "Auto Parts: OEM": "قطع غيار السيارات",
     "Motor Vehicles": "صناعة السيارات",
     "Industrial Machinery": "الآلات الصناعية",
     "Aerospace & Defense": "الفضاء والدفاع",
     "Semiconductors": "أشباه الموصلات",
     "Internet Software/Services": "برمجيات وخدمات الإنترنت",
-    "Major Telecommunications": "الاتصالات الرئيسية",
     "Real Estate Development": "التطوير العقاري",
     "Financial Publishing/Services": "الخدمات المالية"
 }
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ خطأ: أسرار التليجرام مفقودة")
         return False
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -69,33 +56,21 @@ def send_telegram_message(message):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-
     try:
         res = requests.post(url, json=payload, timeout=15)
-        if res.ok:
-            print("✅ تم إرسال التنبيه للتليجرام!")
-            return True
-        else:
-            clean_text = re.sub(r'<[^>]+>', '', message)
-            res_retry = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_text}, timeout=15)
-            return res_retry.ok
-    except Exception as e:
-        print("❌ استثناء أثناء الإرسال للتليجرام:", e)
+        return res.ok
+    except:
         return False
 
 def extract_ratio_numbers(ratio_str):
     ratio_str = str(ratio_str).lower().strip()
-    patterns = [
-        r'(\d+(?:\.\d+)?)\s*(?:-?\s*for\s*-?|:|-|to|\/)\s*(\d+(?:\.\d+)?)',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, ratio_str)
-        if match:
-            return float(match.group(1)), float(match.group(2))
+    match = re.search(r'(\d+(?:\.\d+)?)\s*(?:-?\s*for\s*-?|:|-|to|\/)\s*(\d+(?:\.\d+)?)', ratio_str)
+    if match:
+        return float(match.group(1)), float(match.group(2))
     return None, None
 
 def format_ratio_ar(num, den, raw_str=""):
-    if num is not None and den is not None and num > 0 and den > 0:
+    if num and den and num > 0 and den > 0:
         factor = den / num if num < den else num / den
         return f"1 مقابل {int(factor) if factor == int(factor) else round(factor, 2)}"
     return raw_str or "تقسيم عكسي"
@@ -110,32 +85,25 @@ def format_shares_count(num):
     else:
         return f"{int(num)} سهم"
 
-# 1. جلب التقسيمات اليومية من ناسداك
 def get_todays_reverse_splits():
     today_est = (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).date()
     today_str = today_est.strftime("%Y-%m-%d")
     splits_dict = {}
-
     try:
-        nasdaq_url = f"https://api.nasdaq.com/api/calendar/splits?date={today_str}"
+        url = f"https://api.nasdaq.com/api/calendar/splits?date={today_str}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0",
             "Accept": "application/json, text/plain, */*",
-            "Origin": "https://www.nasdaq.com",
-            "Referer": "https://www.nasdaq.com/"
+            "Origin": "https://www.nasdaq.com"
         }
-        res = requests.get(nasdaq_url, headers=headers, timeout=12)
-        
+        res = requests.get(url, headers=headers, timeout=12)
         if res.status_code == 200:
-            data = res.json().get('data', {}) or {}
-            rows = data.get('rows', []) or []
+            rows = res.json().get('data', {}).get('rows', []) or []
             for row in rows:
                 symbol = str(row.get('symbol', '')).strip().upper()
                 ratio_str = str(row.get('ratio', ''))
                 num, den = extract_ratio_numbers(ratio_str)
-                
                 is_reverse = (num is not None and den is not None and num < den) or "reverse" in ratio_str.lower()
-                
                 if symbol and is_reverse and symbol not in splits_dict:
                     splits_dict[symbol] = {
                         'symbol': symbol,
@@ -144,24 +112,22 @@ def get_todays_reverse_splits():
                         'raw_text': ratio_str
                     }
     except Exception as e:
-        print("Nasdaq API Error:", e)
-
+        print("Nasdaq Error:", e)
     return list(splits_dict.values())
 
-# 2. جلب بيانات TradingView وتصنيع التقرير اللحظي
-def get_tradingview_stock_data(ticker):
+def get_tradingview_stock_data_strict(ticker):
+    """ استعلام دقيق يضمن تصفية البورصة والأصول الصحيحة """
     url = "https://scanner.tradingview.com/america/scan"
     payload = {
         "filter": [
-            {"left": "name", "operation": "equal", "right": ticker.upper()}
+            {"left": "name", "operation": "equal", "right": ticker.upper()},
+            {"left": "exchange", "operation": "in_range", "right": ["NASDAQ", "NYSE", "AMEX"]}
         ],
         "columns": [
             "name",
             "close",
             "change",
-            "high",
-            "low",
-            "volume",
+            "market_cap_basic",
             "float_shares_outstanding",
             "sector",
             "industry",
@@ -169,17 +135,12 @@ def get_tradingview_stock_data(ticker):
             "subtype"
         ]
     }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
-
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
     data = {
         'is_valid_stock': True,
         'price': 0.0,
         'change_pct': 0.0,
-        'high': 0.0,
-        'low': 0.0,
-        'volume': 0,
         'raw_float': 0.0,
         'sector': 'غير متوفر',
         'industry': 'غير متوفر'
@@ -188,148 +149,84 @@ def get_tradingview_stock_data(ticker):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         if res.status_code == 200:
-            res_json = res.json()
-            rows = res_json.get("data", [])
+            rows = res.json().get("data", [])
             if rows:
                 cols = rows[0].get("d", [])
                 data['price'] = float(cols[1] or 0.0)
                 data['change_pct'] = float(cols[2] or 0.0)
-                data['high'] = float(cols[3] or 0.0)
-                data['low'] = float(cols[4] or 0.0)
-                data['volume'] = int(cols[5] or 0)
-                data['raw_float'] = float(cols[6] or 0.0)
+                data['raw_float'] = float(cols[4] or 0.0)
 
-                raw_sec = cols[7] or ''
-                raw_ind = cols[8] or ''
-                entity_type = str(cols[9] or '').lower()
-                entity_subtype = str(cols[10] or '').lower()
+                raw_sec = cols[5] or ''
+                raw_ind = cols[6] or ''
+                entity_type = str(cols[7] or '').lower()
+                entity_subtype = str(cols[8] or '').lower()
 
                 # استبعاد الصناديق والمحافظ والأسهم الممتازة
-                invalid_types = ['fund', 'etf', 'cef', 'right', 'warrant', 'structured', 'bond']
-                invalid_subtypes = ['cef', 'etf', 'preferred', 'warrant', 'right']
-
-                if any(inv in entity_type for inv in invalid_types) or any(inv in entity_subtype for inv in invalid_subtypes):
+                invalid_types = ['fund', 'etf', 'cef', 'right', 'warrant', 'bond']
+                if any(inv in entity_type or inv in entity_subtype for inv in invalid_types):
                     data['is_valid_stock'] = False
 
                 if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
                 if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
     except Exception as e:
-        print(f"TradingView API Error for {ticker}: {e}")
+        print(f"TradingView Error for {ticker}: {e}")
 
     return data
 
-def start_intraday_monitoring():
-    print("🚀 بدء تشغيل خادم المتابعة اللحظية لأسهم التقسيم العكسي...")
-    
+def run_task():
+    print("🚀 بدء الفحص المحدث والدقيق...")
     splits = get_todays_reverse_splits()
+
     if not splits:
-        print("ℹ️ لا توجد أسهم تقسيم عكسي مسجلة اليوم.")
-        now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        send_telegram_message(f"ℹ️ <b>تقرير السوق اليومي:</b>\n⏰ <code>{now_str} UTC</code>\nلا توجد أسهم تقسيم عكسي مسجلة اليوم.")
+        send_telegram_message("ℹ️ لا توجد أسهم تقسيم عكسي مسجلة اليوم.")
         return
 
-    # سجل التتبع المباشر لمنع التنبيهات المكررة
-    tracking_state = {}
-
-    # إرسال تقرير الافتتاح
-    opening_messages = []
-    valid_splits = []
-
+    updates = []
     for item in splits:
         symbol = item['symbol']
-        tv_data = get_tradingview_stock_data(symbol)
+        num = item['num']
+        den = item['den']
 
+        tv_data = get_tradingview_stock_data_strict(symbol)
         if not tv_data['is_valid_stock']:
             continue
 
-        valid_splits.append(item)
-        tracking_state[symbol] = {
-            'last_price': tv_data['price'],
-            'last_change': tv_data['change_pct'],
-            'last_alert_type': None
-        }
+        factor = (den / num) if (num and den and num < den) else 1.0
 
-        clean_ratio = html.escape(format_ratio_ar(item['num'], item['den'], item['raw_text']))
-        price_str = f"${round(tv_data['price'], 4)}" if tv_data['price'] > 0 else "غير متوفر"
-        float_str = format_shares_count(tv_data['raw_float'])
+        # 1. تصحيح السعر إذا كان كود API يعرض السعر قبل التقسيم
+        raw_price = tv_data['price']
+        if raw_price > 0 and raw_price < 1.0 and factor >= 5:
+            current_price = raw_price * factor
+        else:
+            current_price = raw_price
+
+        # 2. تصحيح الفلوت بقسمته على معامل التقسيم فوراً
+        raw_float = tv_data['raw_float']
+        if raw_float > 0:
+            adjusted_float = raw_float / factor if factor > 1 else raw_float
+            post_split_float_str = format_shares_count(adjusted_float)
+        else:
+            post_split_float_str = "غير متوفر"
+
+        change_pct = tv_data['change_pct']
         tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
-        msg = (
-            f"🎯 <b>بداية متابعة سهم تقسيم عكسي: ${symbol}</b>\n"
-            f"⚖️ النسبة: <b>{clean_ratio}</b>\n"
-            f"💵 سعر الافتتاح: <b>{price_str}</b>\n"
-            f"📊 الفلوت: <b>{float_str}</b>\n"
+        info = (
+            f"🔹 <b>${symbol}</b>\n"
+            f"⚖️ النسبة: <b>{html.escape(format_ratio_ar(num, den, item['raw_text']))}</b>\n"
+            f"💵 السعر المعدل (بعد التقسيم): <b>${round(current_price, 2)}</b>\n"
+            f"📊 الفلوت الفعلي المتبقي: <b>{post_split_float_str}</b>\n"
             f"🏢 القطاع: <b>{html.escape(tv_data['sector'])}</b>\n"
-            f"📈 الشارت: <a href='{tv_url}'>TradingView</a>"
+            f"🛠️ النشاط: <b>{html.escape(tv_data['industry'])}</b>\n"
+            f"📈 التغير اليومي: <b>{round(change_pct, 2)}%</b>\n"
+            f"🔗 <a href='{tv_url}'>TradingView Chart</a>"
         )
-        opening_messages.append(msg)
+        updates.append(info)
 
-    if opening_messages:
-        start_msg = (
-            f"⚡ <b>بدء المتابعة اللحظية لأسهم التقسيم العكسي ({len(valid_splits)} أسهم)</b>\n"
-            f"──────────────────\n\n" + "\n\n───────────────\n\n".join(opening_messages)
-        )
-        send_telegram_message(start_msg)
-
-    # ==========================================
-    # حلقة المتابعة اللحظية (Intraday Loop)
-    # ==========================================
-    print(f"🔄 جاري بدء حلقة الفحص المباشر كل {CHECK_INTERVAL_SECONDS} ثانية...")
-    
-    while True:
-        try:
-            time.sleep(CHECK_INTERVAL_SECONDS)
-            now_time = datetime.datetime.utcnow().strftime('%H:%M:%S')
-
-            for item in valid_splits:
-                symbol = item['symbol']
-                tv_data = get_tradingview_stock_data(symbol)
-                
-                current_price = tv_data['price']
-                change_pct = tv_data['change_pct']
-                volume = tv_data['volume']
-                high_price = tv_data['high']
-                low_price = tv_data['low']
-
-                prev_state = tracking_state.get(symbol, {})
-                prev_change = prev_state.get('last_change', 0.0)
-
-                tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
-                
-                # 1. تنبيه صعود حاد / ارتداد إيجابي 🚀
-                if change_pct >= ALERT_PUMP_THRESHOLD and prev_state.get('last_alert_type') != 'PUMP':
-                    alert_msg = (
-                        f"🚀 <b>تنبيه صعود إيجابي: ${symbol}</b>\n"
-                        f"📈 التغير الحالي: <b>+{round(change_pct, 2)}%</b>\n"
-                        f"💵 السعر الحالي: <b>${round(current_price, 4)}</b>\n"
-                        f"🔝 الأعلى اليوم: <b>${round(high_price, 4)}</b>\n"
-                        f"📊 الحجم (Volume): <b>{volume:,}</b>\n"
-                        f"⏰ الوقت: <code>{now_time} UTC</code>\n"
-                        f"🔗 <a href='{tv_url}'>فتح الشارت المباشر</a>"
-                    )
-                    send_telegram_message(alert_msg)
-                    tracking_state[symbol]['last_alert_type'] = 'PUMP'
-
-                # 2. تنبيه هبوط حاد ⚠️
-                elif change_pct <= ALERT_DUMP_THRESHOLD and prev_state.get('last_alert_type') != 'DUMP':
-                    alert_msg = (
-                        f"⚠️ <b>تنبيه هبوط حاد: ${symbol}</b>\n"
-                        f"📉 التغير الحالي: <b>{round(change_pct, 2)}%</b>\n"
-                        f"💵 السعر الحالي: <b>${round(current_price, 4)}</b>\n"
-                        f"🔻 الأدنى اليوم: <b>${round(low_price, 4)}</b>\n"
-                        f"📊 الحجم (Volume): <b>{volume:,}</b>\n"
-                        f"⏰ الوقت: <code>{now_time} UTC</code>\n"
-                        f"🔗 <a href='{tv_url}'>فتح الشارت المباشر</a>"
-                    )
-                    send_telegram_message(alert_msg)
-                    tracking_state[symbol]['last_alert_type'] = 'DUMP'
-
-                # تحديث الحالة المخزنة
-                tracking_state[symbol]['last_price'] = current_price
-                tracking_state[symbol]['last_change'] = change_pct
-
-        except Exception as e:
-            print("❌ خطأ أثناء حلقة المتابعة اللحظية:", e)
+    if updates:
+        now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        msg = f"📊 <b>تقرير أسهم التقسيم العكسي المعدل</b>\n⏰ <code>{now_str} UTC</code>\n──────────────────\n\n" + "\n\n───────────────\n\n".join(updates)
+        send_telegram_message(msg)
 
 if __name__ == "__main__":
-    start_intraday_monitoring()
+    run_task()
