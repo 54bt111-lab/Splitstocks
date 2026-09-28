@@ -118,7 +118,7 @@ def parse_date(date_str):
             continue
     try:
         parsed = datetime.datetime.strptime(date_str, "%b %d").date()
-        return parsed.replace(year=datetime.date.today().year)
+        return parsed.replace(year=datetime.datetime.utcnow().year)
     except:
         return None
 
@@ -152,19 +152,27 @@ def format_shares_count(num):
         return f"{int(num)} سهم"
 
 # ==========================================
-# 1. جلب التقسيمات العكسية اليومية
+# 1. جلب التقسيمات العكسية اليومية من مصادر متعددة
 # ==========================================
 def get_todays_reverse_splits():
-    today = datetime.date.today()
-    today_str = today.strftime("%Y-%m-%d")
-    splits_dict = {}
+    today_utc = datetime.datetime.utcnow().date()
+    today_est = (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).date()
+    valid_dates = {today_utc, today_est}
 
+    splits_dict = {}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+
+    # المصدر 1: StockAnalysis
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         url = "https://stockanalysis.com/actions/splits/"
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', response.text, re.DOTALL)
+        res = requests.get(url, headers=headers, timeout=12)
+        print(f"StockAnalysis Status: {res.status_code}")
+        if res.status_code == 200:
+            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', res.text, re.DOTALL)
             for row in rows:
                 cols = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
                 if len(cols) >= 4:
@@ -177,7 +185,7 @@ def get_todays_reverse_splits():
                     num, den = extract_ratio_numbers(row_text)
                     is_reverse = "reverse" in row_text.lower() or (num is not None and den is not None and num < den)
 
-                    if split_date and split_date == today and is_reverse and symbol not in splits_dict:
+                    if split_date in valid_dates and is_reverse and symbol not in splits_dict:
                         splits_dict[symbol] = {
                             'symbol': symbol,
                             'date': split_date,
@@ -186,32 +194,56 @@ def get_todays_reverse_splits():
                             'raw_text': row_text
                         }
     except Exception as e:
-        print("StockAnalysis error:", e)
+        print("StockAnalysis fetch error:", e)
 
-    if FMP_API_KEY:
+    # المصدر 2: StockTitan الاحتياطي
+    if not splits_dict:
         try:
-            url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={today_str}&to={today_str}&apikey={FMP_API_KEY}"
-            res = requests.get(url, timeout=12).json()
-            if isinstance(res, list):
-                for item in res:
-                    symbol = item.get('symbol', '').upper()
-                    num = float(item.get('numerator', 0))
-                    den = float(item.get('denominator', 0))
-                    if symbol and num > 0 and den > 0 and num < den and symbol not in splits_dict:
-                        splits_dict[symbol] = {
-                            'symbol': symbol,
-                            'date': today,
-                            'num': num,
-                            'den': den,
-                            'raw_text': f"{num} for {den}"
+            st_url = "https://www.stocktitan.net/news/splits/"
+            st_res = requests.get(st_url, headers=headers, timeout=12)
+            print(f"StockTitan Status: {st_res.status_code}")
+            if st_res.status_code == 200:
+                matches = re.findall(r'href="/news/([A-Z0-9]+)/[^"]*reverse-stock-split[^"]*"', st_res.text, re.IGNORECASE)
+                for sym in matches:
+                    sym = sym.upper()
+                    if sym not in splits_dict:
+                        splits_dict[sym] = {
+                            'symbol': sym,
+                            'date': today_utc,
+                            'num': None,
+                            'den': None,
+                            'raw_text': 'Reverse Split'
                         }
         except Exception as e:
-            print("FMP Calendar error:", e)
+            print("StockTitan fetch error:", e)
+
+    # المصدر 3: FMP API
+    if FMP_API_KEY:
+        for d in valid_dates:
+            d_str = d.strftime("%Y-%m-%d")
+            try:
+                url = f"https://financialmodelingprep.com/api/v3/stock_split_calendar?from={d_str}&to={d_str}&apikey={FMP_API_KEY}"
+                res = requests.get(url, timeout=10).json()
+                if isinstance(res, list):
+                    for item in res:
+                        symbol = item.get('symbol', '').upper()
+                        num = float(item.get('numerator', 0))
+                        den = float(item.get('denominator', 0))
+                        if symbol and num > 0 and den > 0 and num < den and symbol not in splits_dict:
+                            splits_dict[symbol] = {
+                                'symbol': symbol,
+                                'date': d,
+                                'num': num,
+                                'den': den,
+                                'raw_text': f"{num} for {den}"
+                            }
+            except Exception as e:
+                print("FMP Calendar error:", e)
 
     return list(splits_dict.values())
 
 # ==========================================
-# 2. كشط Finviz المباشر (المصدر الرئيسي)
+# 2. كشط Finviz المباشر
 # ==========================================
 def scrape_finviz_details(ticker):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
@@ -227,43 +259,34 @@ def scrape_finviz_details(ticker):
         res = requests.get(url, headers=headers, timeout=8)
         if res.status_code == 200:
             html = res.text
-            
             sec_match = re.search(r'f=sec_[^"]*"[^>]*>(.*?)</a>', html)
             if sec_match:
                 raw_sec = sec_match.group(1).strip()
                 res_data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
-                
             ind_match = re.search(r'f=ind_[^"]*"[^>]*>(.*?)</a>', html)
             if ind_match:
                 raw_ind = ind_match.group(1).strip()
                 res_data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
-                
             flt_match = re.search(r'Shs Float</td>\s*<td[^>]*>(?:<b>)?(.*?)(?:</b>)?</td>', html)
             if flt_match:
                 res_data['raw_float'] = parse_number_with_suffix(flt_match.group(1))
-                
             pc_match = re.search(r'Prev Close</td>\s*<td[^>]*>(?:<b>)?(.*?)(?:</b>)?</td>', html)
             if pc_match:
                 res_data['prev_close'] = parse_number_with_suffix(pc_match.group(1))
-                
             pr_match = re.search(r'Price</td>\s*<td[^>]*>(?:<b>)?(.*?)(?:</b>)?</td>', html)
             if pr_match:
                 res_data['price'] = parse_number_with_suffix(pr_match.group(1))
     except Exception as e:
         print(f"Finviz error for {ticker}: {e}")
-        
     return res_data
 
 # ==========================================
-# 3. جلب وتجميع بيانات السهم من كافة المصادر
+# 3. جلب وتجميع بيانات السهم
 # ==========================================
 def get_stock_data(ticker, ratio_num, ratio_den):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
-    # 1. Finviz كشط رئيسي
     data = scrape_finviz_details(ticker)
 
-    # 2. FMP API Profile (في حال توفر API Key ووجود نقص)
     if FMP_API_KEY and (data['sector'] == 'غير متوفر' or data['price'] == 0):
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker.upper()}?apikey={FMP_API_KEY}"
@@ -271,17 +294,14 @@ def get_stock_data(ticker, ratio_num, ratio_den):
             if isinstance(fmp_res, list) and len(fmp_res) > 0:
                 prof = fmp_res[0]
                 if data['sector'] == 'غير متوفر' and prof.get('sector'):
-                    raw_sec = prof.get('sector')
-                    data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                    data['sector'] = SECTOR_MAP.get(prof.get('sector'), prof.get('sector'))
                 if data['industry'] == 'غير متوفر' and prof.get('industry'):
-                    raw_ind = prof.get('industry')
-                    data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
+                    data['industry'] = INDUSTRY_MAP.get(prof.get('industry'), prof.get('industry'))
                 if data['price'] == 0 and prof.get('price'):
                     data['price'] = float(prof.get('price'))
         except Exception as e:
             print(f"FMP profile error for {ticker}: {e}")
 
-    # 3. Yahoo Finance Chart API (تثبيت السعر والإغلاق)
     try:
         y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
         y_res = requests.get(y_url, headers=headers, timeout=8)
@@ -294,30 +314,6 @@ def get_stock_data(ticker, ratio_num, ratio_den):
                     data['prev_close'] = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
     except Exception as e:
         print(f"Yahoo Chart error for {ticker}: {e}")
-
-    # 4. TradingView Scanner (احتياطي للفلوت والقطاع)
-    if data['raw_float'] == 0 or data['sector'] == 'غير متوفر':
-        try:
-            tv_payload = {
-                "filter": [{"left": "name", "operation": "equal", "right": ticker}],
-                "columns": ["name", "close", "change", "sector", "industry", "float_shares_outstanding"]
-            }
-            tv_req = requests.post("https://scanner.tradingview.com/america/scan", json=tv_payload, headers=headers, timeout=8)
-            if tv_req.status_code == 200:
-                res_data = tv_req.json().get("data", [])
-                if res_data:
-                    row = res_data[0].get("d", [])
-                    if len(row) >= 6:
-                        if data['sector'] == 'غير متوفر' and row[3]:
-                            raw_sec = str(row[3])
-                            data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
-                        if data['industry'] == 'غير متوفر' and row[4]:
-                            raw_ind = str(row[4])
-                            data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
-                        if data['raw_float'] == 0 and row[5] and float(row[5]) > 0:
-                            data['raw_float'] = float(row[5])
-        except Exception as e:
-            print(f"TradingView fetch error for {ticker}: {e}")
 
     return data
 
@@ -339,7 +335,15 @@ def run_task():
     splits = get_todays_reverse_splits()
 
     if not splits:
-        print("لا توجد أسهم تقسيم عكسي ليوم اليوم.")
+        print("لا توجد أسهم تقسيم عكسي اليوم.")
+        now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        msg = (
+            f"ℹ️ <b>تحديث فحص الأسهم اليومي:</b>\n"
+            f"⏰ الوقت: <code>{now_str} UTC</code>\n"
+            f"──────────────────\n"
+            f"تم فحص السوق بنجاح، ولم يُعثر على أسهم تقسيم عكسي جديدة لهذا اليوم."
+        )
+        send_telegram_message(msg)
         return
 
     updates = []
@@ -357,9 +361,6 @@ def run_task():
         if num and den and num < den:
             factor = den / num
 
-        # ==========================================
-        # خوارزمية الحساب القياسية التلقائية الذكية
-        # ==========================================
         theoretical_price = 0.0
         post_split_current = 0.0
 
@@ -383,10 +384,7 @@ def run_task():
 
         raw_float = stock_data['raw_float']
         if raw_float > 0:
-            if raw_float > 10_000_000: 
-                calc_float = raw_float / factor
-            else: 
-                calc_float = raw_float
+            calc_float = raw_float / factor if raw_float > 10_000_000 and factor > 1 else raw_float
             post_split_float_str = format_shares_count(calc_float)
         else:
             post_split_float_str = "غير متوفر"
@@ -415,7 +413,7 @@ def run_task():
         updates.append(info)
 
     if updates:
-        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         msg = (
             f"📊 <b>متابعة أسهم التقسيم العكسي اليوم</b>\n"
             f"⏰ الوقت: <code>{now_str} UTC</code>\n"
