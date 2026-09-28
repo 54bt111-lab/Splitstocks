@@ -101,7 +101,7 @@ def format_shares_count(num):
         return f"{int(num)} سهم"
 
 # ==========================================
-# 1. جلب التقسيمات العكسية اليومية
+# 1. جلب أسهم التقسيم العكسي اليومية
 # ==========================================
 def get_todays_reverse_splits():
     today = datetime.date.today()
@@ -162,7 +162,7 @@ def get_todays_reverse_splits():
     return list(splits_dict.values())
 
 # ==========================================
-# 2. جلب معلومات السهم والأسعار متعدد الموردين
+# 2. جلب وتصحيح بيانات الأسعار والفلوت
 # ==========================================
 def get_stock_data(ticker, ratio_num, ratio_den):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -171,6 +171,7 @@ def get_stock_data(ticker, ratio_num, ratio_den):
         'prev_close': 0.0,
         'sector': 'غير متوفر',
         'industry': 'غير متوفر',
+        'raw_float': 0.0,
         'post_split_float': 'غير متوفر'
     }
 
@@ -198,15 +199,12 @@ def get_stock_data(ticker, ratio_num, ratio_den):
                     raw_ind = str(row[4]) if row[4] else ""
                     if raw_ind and raw_ind.lower() not in ["peers", "none", "null"]:
                         data['industry'] = raw_ind
-
-                    raw_float = row[5]
-                    if raw_float and raw_float > 0:
-                        calc_float = raw_float / factor if (raw_float > 20_000_000 and factor > 1) else raw_float
-                        data['post_split_float'] = format_shares_count(calc_float)
+                    if row[5] and float(row[5]) > 0:
+                        data['raw_float'] = float(row[5])
     except Exception as e:
         print(f"TradingView fetch error for {ticker}: {e}")
 
-    # 2. Yahoo Chart v8 API (جلب السعر والإغلاق السابق)
+    # 2. Yahoo Chart v8 API
     try:
         for domain in ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]:
             y_url = f"https://{domain}/v8/finance/chart/{ticker}?interval=1d&range=5d"
@@ -224,8 +222,25 @@ def get_stock_data(ticker, ratio_num, ratio_den):
     except Exception as e:
         print(f"Yahoo Chart error for {ticker}: {e}")
 
-    # 3. FMP API
-    if FMP_API_KEY and (data['price'] == 0 or data['prev_close'] == 0 or data['sector'] == 'غير متوفر'):
+    # 3. StockAnalysis API
+    try:
+        sa_url = f"https://stockanalysis.com/api/quotes/s/{ticker.lower()}"
+        sa_res = requests.get(sa_url, headers=headers, timeout=8)
+        if sa_res.status_code == 200:
+            sa_data = sa_res.json().get("data", {})
+            if sa_data:
+                if data['price'] == 0:
+                    data['price'] = float(sa_data.get("price", 0.0))
+                if data['prev_close'] == 0:
+                    data['prev_close'] = float(sa_data.get("close", 0.0))
+                if data['raw_float'] == 0:
+                    flt = sa_data.get("float") or sa_data.get("shares")
+                    if flt: data['raw_float'] = float(flt)
+    except Exception as e:
+        print(f"StockAnalysis API error for {ticker}: {e}")
+
+    # 4. FMP API Fallback
+    if FMP_API_KEY and (data['price'] == 0 or data['sector'] == 'غير متوفر'):
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_API_KEY}"
             q_res = requests.get(q_url, timeout=8).json()
@@ -246,19 +261,11 @@ def get_stock_data(ticker, ratio_num, ratio_den):
         except Exception as e:
             print(f"FMP fetch error for {ticker}: {e}")
 
-    # 4. StockAnalysis API Fallback
-    if data['price'] == 0:
-        try:
-            sa_url = f"https://stockanalysis.com/api/quotes/s/{ticker.lower()}"
-            sa_res = requests.get(sa_url, headers=headers, timeout=8)
-            if sa_res.status_code == 200:
-                sa_data = sa_res.json().get("data", {})
-                if sa_data:
-                    data['price'] = float(sa_data.get("price", 0.0))
-                    if data['prev_close'] == 0:
-                        data['prev_close'] = float(sa_data.get("close", 0.0))
-        except Exception as e:
-            print(f"StockAnalysis API error for {ticker}: {e}")
+    # معالجة الفلوت المتوقع بشكل دقيق
+    if data['raw_float'] > 0 and factor > 1:
+        # إذا كان الفلوت المستلم هو قبل التقسيم
+        calc_float = data['raw_float'] / factor
+        data['post_split_float'] = format_shares_count(calc_float)
 
     return data
 
@@ -299,35 +306,34 @@ def run_task():
             factor = den / num
 
         # ==========================================
-        # حساب السعر النظري للتقسيم بشكل دقيق جداً
+        # خوارزمية حساب السعر النظري للتقسيم الصحيحة
         # ==========================================
+        base_price = prev_close if prev_close > 0 else current_price
         theoretical = 0.0
-        if prev_close > 0 and factor > 1:
-            price_unadjusted = prev_close * factor
-            if current_price > 0:
-                # التحقق الذكي: هل مزود البيانات عدّل الإغلاق السابق تلقائياً أم لا؟
-                if abs(price_unadjusted - current_price) < abs(prev_close - current_price):
-                    theoretical = price_unadjusted
-                else:
-                    theoretical = prev_close
+
+        if base_price > 0 and factor > 1:
+            # إذا كان السعر المستلم هو سعر ما قبل التقسيم (أقل من $5)
+            if base_price < 5.0:
+                theoretical = base_price * factor
             else:
-                theoretical = price_unadjusted if prev_close < 15.0 else prev_close
+                theoretical = base_price
         elif current_price > 0:
             theoretical = current_price
 
-        # حساب التغير عن السعر النظري
+        # حساب نسبة التغير عن السعر النظري
         change_pct = 0.0
         if theoretical > 0 and current_price > 0:
-            change_pct = ((current_price - theoretical) / theoretical) * 100
+            # إذا كان السعر الحالي ما زال بقيمته القديمة قبل افتتاح السوق بعد التقسيم
+            actual_current = current_price * factor if current_price < 5.0 and theoretical >= 5.0 else current_price
+            change_pct = ((actual_current - theoretical) / theoretical) * 100
 
         status_emoji = "🟢" if change_pct >= 0 else "🔴"
         alert_str = "\n🔥 <b>تنبيه: هبوط أكثر من 30% (فرصة ارتداد محتملة)!</b>" if change_pct <= -30 else ""
 
         tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
-        # تنسيق مخرجات النصوص بشكل أنيق
         price_disp = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
-        theoretical_disp = f"${round(theoretical, 4)}" if theoretical > 0 else "غير متوفر"
+        theoretical_disp = f"${round(theoretical, 2)}" if theoretical > 0 else "غير متوفر"
 
         info = (
             f"🔹 <b>${symbol}</b>\n"
