@@ -129,7 +129,7 @@ def get_todays_reverse_splits():
 
     return list(splits_dict.values())
 
-# 2. جلب بيانات TradingView والدقة في استبعاد الأصول غير العادية
+# 2. جلب بيانات TradingView وتصفية الأصول
 def get_tradingview_stock_data(ticker):
     url = "https://scanner.tradingview.com/america/scan"
     payload = {
@@ -185,7 +185,7 @@ def get_tradingview_stock_data(ticker):
 
     return data
 
-# 3. جلب عدد التقسيمات السابقة عبر Yahoo Finance
+# 3. جلب عدد التقسيمات السابقة
 def get_prior_splits_count(ticker):
     headers = {"User-Agent": "Mozilla/5.0"}
     count = 0
@@ -201,7 +201,7 @@ def get_prior_splits_count(ticker):
     return count
 
 def run_task():
-    print("🚀 بدء تنفيذ الفحص اليومي للأسهم مع تحسين الحسابات وقالب المخرجات...")
+    print("🚀 بدء تنفيذ الفحص اليومي للأسهم بالصيغة المعتمدة...")
     splits = get_todays_reverse_splits()
 
     if not splits:
@@ -218,19 +218,20 @@ def run_task():
         if not tv_data['is_valid_stock']:
             continue
 
-        # معامل التقسيم (مثال: 160 / 1 = 160)
+        # معامل التقسيم
         factor = (den / num) if (num and den and num < den) else 1.0
 
         current_price = tv_data['price']
         change_pct = tv_data['change_pct']
 
-        # حساب السعر المتوقع للتقسيم (إذا كان السعر الحالي هو سعر ما قبل التقسيم)
-        if current_price > 0:
+        # حساب السعر المتوقع للتقسيم
+        if current_price > 0 and factor > 0:
             theoretical_price = current_price * factor
+            price_theo_str = f"{round(theoretical_price, 2)}$"
         else:
-            theoretical_price = 0.0
+            price_theo_str = "غير متوفر"
 
-        # حساب Free Float الفعلي المتبقي بعد التقسيم
+        # حساب Free Float المتبقي بعد التقسيم
         raw_float = tv_data['raw_float']
         if raw_float > 0:
             post_split_float = raw_float / factor if factor > 1 else raw_float
@@ -244,10 +245,9 @@ def run_task():
         sector_and_industry = f"{tv_data['sector']} / {tv_data['industry']}"
         tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
-        price_curr_str = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
-        price_theo_str = f"${round(theoretical_price, 2)}" if theoretical_price > 0 else "غير متوفر"
+        price_curr_str = f"{round(current_price, 4)}$" if current_price > 0 else "غير متوفر"
 
-        # 📌 النمط والقالب الثابت للمخرجات كما تم تحديده بالكامل
+        # 📌 القالب المعتمد المكتمل بناءً على المخرجات النهائية
         info = (
             f"🔹 <b>${symbol}</b>\n"
             f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
