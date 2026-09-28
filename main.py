@@ -9,36 +9,87 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
 SECTOR_MAP = {
-    "Health Technology": "الرعاية الصحية - تكنولوجيا (Health Technology)",
+    "Health Technology": "الرعاية الصحية - تكنولوجيا",
     "Healthcare": "الرعاية الصحية (Healthcare)",
-    "Health Services": "الخدمات الصحية (Health Services)",
-    "Electronic Technology": "التكنولوجيا الإلكترونية (Electronic Technology)",
-    "Technology Services": "خدمات التكنولوجيا (Technology Services)",
+    "Health Services": "الخدمات الصحية",
+    "Electronic Technology": "التكنولوجيا الإلكترونية",
+    "Technology Services": "خدمات التكنولوجيا",
     "Technology": "التكنولوجيا (Technology)",
-    "Finance": "الخدمات المالية (Finance)",
-    "Financial Services": "الخدمات المالية (Financial Services)",
-    "Financial": "الخدمات المالية (Financial Services)",
-    "Commercial Services": "الخدمات التجارية (Commercial Services)",
-    "Consumer Durables": "السلع الاستهلاكية المعمرة (Consumer Durables)",
-    "Consumer Non-Durables": "السلع الاستهلاكية غير المعمرة (Consumer Non-Durables)",
-    "Consumer Cyclical": "السلع الاستهلاكية الدورية (Consumer Cyclical)",
-    "Consumer Defensive": "السلع الاستهلاكية الدفاعية (Consumer Defensive)",
-    "Consumer Services": "الخدمات الاستهلاكية (Consumer Services)",
-    "Energy Minerals": "معادن الطاقة (Energy Minerals)",
+    "Finance": "الخدمات المالية",
+    "Financial Services": "الخدمات المالية",
+    "Financial": "الخدمات المالية",
+    "Commercial Services": "الخدمات التجارية",
+    "Consumer Durables": "السلع الاستهلاكية المعمرة",
+    "Consumer Non-Durables": "السلع الاستهلاكية غير المعمرة",
+    "Consumer Cyclical": "السلع الاستهلاكية الدورية",
+    "Consumer Defensive": "السلع الاستهلاكية الدفاعية",
+    "Consumer Services": "الخدمات الاستهلاكية",
+    "Energy Minerals": "معادن الطاقة",
     "Energy": "الطاقة (Energy)",
-    "Non-Energy Minerals": "المعادن غير الطاقية (Non-Energy Minerals)",
-    "Process Industries": "الصناعات التحويلية (Process Industries)",
-    "Producer Manufacturing": "التصنيع الإنتاجي (Producer Manufacturing)",
+    "Non-Energy Minerals": "المعادن غير الطاقية",
+    "Process Industries": "الصناعات التحويلية",
+    "Producer Manufacturing": "التصنيع الإنتاجي",
     "Industrials": "الصناعة (Industrials)",
-    "Industrial Services": "الخدمات الصناعية (Industrial Services)",
-    "Basic Materials": "المواد الأساسية (Basic Materials)",
+    "Industrial Services": "الخدمات الصناعية",
+    "Basic Materials": "المواد الأساسية",
     "Real Estate": "العقارات (Real Estate)",
-    "Utilities": "المرافق العامة (Utilities)",
-    "Retail Trade": "تجارة التجزئة (Retail Trade)",
-    "Transportation": "النقل والمواصلات (Transportation)",
-    "Communications": "الاتصالات (Communications)",
-    "Communication Services": "خدمات الاتصالات (Communication Services)"
+    "Utilities": "المرافق العامة",
+    "Retail Trade": "تجارة التجزئة",
+    "Transportation": "النقل والمواصلات",
+    "Communications": "الاتصالات",
+    "Communication Services": "خدمات الاتصالات"
 }
+
+INDUSTRY_MAP = {
+    "Software - Infrastructure": "البرمجيات - البنية التحتية",
+    "Software - Application": "البرمجيات - التطبيقات",
+    "Software - Interactive": "البرمجيات التفاعلية",
+    "Biotechnology": "التكنولوجيا الحيوية (Biotechnology)",
+    "Medical Devices": "الأجهزة الطبية",
+    "Drug Manufacturers - General": "صناعة الأدوية - عام",
+    "Drug Manufacturers - Specialty & Generic": "صناعة الأدوية - متخصصة",
+    "Healthcare Plans": "الرعاية الصحية - التأمين",
+    "Diagnostics & Research": "التشخيص والأبحاث الطبية",
+    "Medical Care Facilities": "منشآت الرعاية الطبية",
+    "Medical Instruments & Supplies": "المستلزمات والأدوات الطبية",
+    "Health Information Services": "خدمات المعلومات الصحية",
+    "Auto Manufacturers": "صناعة السيارات",
+    "Auto Parts": "قطع غيار السيارات",
+    "Capital Goods": "السلع الرأسمالية",
+    "Electrical Equipment & Parts": "المعدات والقطع الكهربائية",
+    "Specialty Industrial Machinery": "الآلات الصناعية المتخصصة",
+    "Aerospace & Defense": "الفضاء والدفاع",
+    "Semiconductors": "أشباه الموصلات",
+    "Consumer Electronics": "الإلكترونيات الاستهلاكية",
+    "Information Technology Services": "خدمات تكنولوجيا المعلومات",
+    "Internet Content & Information": "محتوى ومعلومات الإنترنت",
+    "Solar": "الطاقة الشمسية",
+    "Oil & Gas E&P": "النفط والغاز - استكشاف وإنتاج",
+    "Oil & Gas Equipment & Services": "معدات وخدمات النفط والغاز",
+    "Real Estate Services": "الخدمات العقارية",
+    "Capital Markets": "أسواق المال والوساطة",
+    "Specialty Retail": "التجزئة المتخصصة",
+    "Internet Retail": "التجزئة عبر الإنترنت",
+}
+
+def parse_number_with_suffix(val_str):
+    if not val_str or val_str == "-":
+        return 0.0
+    val_str = str(val_str).strip().upper().replace(",", "")
+    multiplier = 1.0
+    if val_str.endswith("B"):
+        multiplier = 1_000_000_000.0
+        val_str = val_str[:-1]
+    elif val_str.endswith("M"):
+        multiplier = 1_000_000.0
+        val_str = val_str[:-1]
+    elif val_str.endswith("K"):
+        multiplier = 1_000.0
+        val_str = val_str[:-1]
+    try:
+        return float(val_str) * multiplier
+    except:
+        return 0.0
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -135,7 +186,7 @@ def get_todays_reverse_splits():
                             'raw_text': row_text
                         }
     except Exception as e:
-        print("StockAnalysis split list error:", e)
+        print("StockAnalysis error:", e)
 
     if FMP_API_KEY:
         try:
@@ -160,104 +211,113 @@ def get_todays_reverse_splits():
     return list(splits_dict.values())
 
 # ==========================================
-# 2. جلب وتأكيد بيانات القطاع والنشاط الرسمية
+# 2. كشط Finviz المباشر (المصدر الرئيسي)
 # ==========================================
-def get_company_profile(ticker):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    sector = "غير متوفر"
-    industry = "غير متوفر"
-
-    # المصدر الأول: Yahoo Finance assetProfile المباشر من تقارير SEC
+def scrape_finviz_details(ticker):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+    res_data = {
+        'sector': 'غير متوفر',
+        'industry': 'غير متوفر',
+        'price': 0.0,
+        'prev_close': 0.0,
+        'raw_float': 0.0
+    }
     try:
-        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=assetProfile"
+        url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
         res = requests.get(url, headers=headers, timeout=8)
         if res.status_code == 200:
-            profile = res.json().get('quoteSummary', {}).get('result', [{}])[0].get('assetProfile', {})
-            if profile:
-                raw_sec = profile.get('sector', '').strip()
-                raw_ind = profile.get('industry', '').strip()
-                if raw_sec: sector = SECTOR_MAP.get(raw_sec, raw_sec)
-                if raw_ind: industry = raw_ind
+            html = res.text
+            
+            sec_match = re.search(r'f=sec_[^"]*"[^>]*>(.*?)</a>', html)
+            if sec_match:
+                raw_sec = sec_match.group(1).strip()
+                res_data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                
+            ind_match = re.search(r'f=ind_[^"]*"[^>]*>(.*?)</a>', html)
+            if ind_match:
+                raw_ind = ind_match.group(1).strip()
+                res_data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
+                
+            flt_match = re.search(r'Shs Float</td>\s*<td[^>]*>(?:<b>)?(.*?)(?:</b>)?</td>', html)
+            if flt_match:
+                res_data['raw_float'] = parse_number_with_suffix(flt_match.group(1))
+                
+            pc_match = re.search(r'Prev Close</td>\s*<td[^>]*>(?:<b>)?(.*?)(?:</b>)?</td>', html)
+            if pc_match:
+                res_data['prev_close'] = parse_number_with_suffix(pc_match.group(1))
+                
+            pr_match = re.search(r'Price</td>\s*<td[^>]*>(?:<b>)?(.*?)(?:</b>)?</td>', html)
+            if pr_match:
+                res_data['price'] = parse_number_with_suffix(pr_match.group(1))
     except Exception as e:
-        print(f"Yahoo Profile error for {ticker}: {e}")
-
-    # المصدر الثاني الاحتياطي: StockAnalysis Profile
-    if sector == "غير متوفر" or industry == "غير متوفر":
-        try:
-            sa_url = f"https://stockanalysis.com/api/quotes/s/{ticker.lower()}"
-            sa_res = requests.get(sa_url, headers=headers, timeout=8)
-            if sa_res.status_code == 200:
-                sa_data = sa_res.json().get("data", {})
-                if sa_data:
-                    if sector == "غير متوفر" and sa_data.get("sector"):
-                        raw_sec = sa_data.get("sector")
-                        sector = SECTOR_MAP.get(raw_sec, raw_sec)
-                    if industry == "غير متوفر" and sa_data.get("industry"):
-                        industry = sa_data.get("industry")
-        except Exception as e:
-            print(f"StockAnalysis profile error for {ticker}: {e}")
-
-    return sector, industry
+        print(f"Finviz error for {ticker}: {e}")
+        
+    return res_data
 
 # ==========================================
-# 3. جلب الأسعار والبيانات المباشرة
+# 3. جلب وتجميع بيانات السهم من كافة المصادر
 # ==========================================
 def get_stock_data(ticker, ratio_num, ratio_den):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    sector, industry = get_company_profile(ticker)
+    # 1. Finviz كشط رئيسي
+    data = scrape_finviz_details(ticker)
 
-    data = {
-        'price': 0.0,
-        'prev_close': 0.0,
-        'sector': sector,
-        'industry': industry,
-        'raw_float': 0.0,
-        'post_split_float': 'غير متوفر'
-    }
+    # 2. FMP API Profile (في حال توفر API Key ووجود نقص)
+    if FMP_API_KEY and (data['sector'] == 'غير متوفر' or data['price'] == 0):
+        try:
+            fmp_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker.upper()}?apikey={FMP_API_KEY}"
+            fmp_res = requests.get(fmp_url, timeout=8).json()
+            if isinstance(fmp_res, list) and len(fmp_res) > 0:
+                prof = fmp_res[0]
+                if data['sector'] == 'غير متوفر' and prof.get('sector'):
+                    raw_sec = prof.get('sector')
+                    data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                if data['industry'] == 'غير متوفر' and prof.get('industry'):
+                    raw_ind = prof.get('industry')
+                    data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
+                if data['price'] == 0 and prof.get('price'):
+                    data['price'] = float(prof.get('price'))
+        except Exception as e:
+            print(f"FMP profile error for {ticker}: {e}")
 
-    factor = 1.0
-    if ratio_num and ratio_den and ratio_num > 0 and ratio_den > 0:
-        factor = ratio_den / ratio_num if ratio_num < ratio_den else ratio_num / ratio_den
-
-    # Yahoo Chart API الأسعار المباشرة والإغلاق السابق
+    # 3. Yahoo Finance Chart API (تثبيت السعر والإغلاق)
     try:
-        y_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
+        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
         y_res = requests.get(y_url, headers=headers, timeout=8)
         if y_res.status_code == 200:
             meta = y_res.json().get('chart', {}).get('result', [{}])[0].get('meta', {})
             if meta:
-                data['price'] = float(meta.get('regularMarketPrice') or 0.0)
-                data['prev_close'] = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
+                if data['price'] == 0:
+                    data['price'] = float(meta.get('regularMarketPrice') or 0.0)
+                if data['prev_close'] == 0:
+                    data['prev_close'] = float(meta.get('chartPreviousClose') or meta.get('previousClose') or 0.0)
     except Exception as e:
         print(f"Yahoo Chart error for {ticker}: {e}")
 
-    # TradingView (فقط لجلب الفلوت والأسعار الاحتياطية)
-    try:
-        tv_payload = {
-            "filter": [{"left": "name", "operation": "equal", "right": ticker}],
-            "columns": ["name", "close", "change", "sector", "industry", "float_shares_outstanding"]
-        }
-        tv_req = requests.post("https://scanner.tradingview.com/america/scan", json=tv_payload, headers=headers, timeout=8)
-        if tv_req.status_code == 200:
-            res_data = tv_req.json().get("data", [])
-            if res_data:
-                row = res_data[0].get("d", [])
-                if len(row) >= 6:
-                    if data['price'] == 0 and row[1] is not None:
-                        data['price'] = float(row[1])
-                    if row[5] and float(row[5]) > 0:
-                        data['raw_float'] = float(row[5])
-    except Exception as e:
-        print(f"TradingView fetch error for {ticker}: {e}")
-
-    # حساب الفلوت بدقة
-    if data['raw_float'] > 0 and factor > 1:
-        if data['raw_float'] > 1_000_000:
-            calc_float = data['raw_float'] / factor
-        else:
-            calc_float = data['raw_float']
-        data['post_split_float'] = format_shares_count(calc_float)
+    # 4. TradingView Scanner (احتياطي للفلوت والقطاع)
+    if data['raw_float'] == 0 or data['sector'] == 'غير متوفر':
+        try:
+            tv_payload = {
+                "filter": [{"left": "name", "operation": "equal", "right": ticker}],
+                "columns": ["name", "close", "change", "sector", "industry", "float_shares_outstanding"]
+            }
+            tv_req = requests.post("https://scanner.tradingview.com/america/scan", json=tv_payload, headers=headers, timeout=8)
+            if tv_req.status_code == 200:
+                res_data = tv_req.json().get("data", [])
+                if res_data:
+                    row = res_data[0].get("d", [])
+                    if len(row) >= 6:
+                        if data['sector'] == 'غير متوفر' and row[3]:
+                            raw_sec = str(row[3])
+                            data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
+                        if data['industry'] == 'غير متوفر' and row[4]:
+                            raw_ind = str(row[4])
+                            data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
+                        if data['raw_float'] == 0 and row[5] and float(row[5]) > 0:
+                            data['raw_float'] = float(row[5])
+        except Exception as e:
+            print(f"TradingView fetch error for {ticker}: {e}")
 
     return data
 
@@ -265,7 +325,7 @@ def get_prior_splits(ticker):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     count = 0
     try:
-        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=10y"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=10y"
         res = requests.get(url, headers=headers, timeout=8).json()
         splits = res.get('chart', {}).get('result', [{}])[0].get('events', {}).get('splits', {})
         for data in splits.values():
@@ -298,21 +358,38 @@ def run_task():
             factor = den / num
 
         # ==========================================
-        # خوارزمية الحساب القياسية الدقيقة
+        # خوارزمية الحساب القياسية التلقائية الذكية
         # ==========================================
-        theoretical = 0.0
-        if prev_close > 0:
-            theoretical = prev_close * factor if prev_close < 3.0 else prev_close
-        elif current_price > 0:
-            theoretical = current_price * factor if current_price < 3.0 else current_price
+        theoretical_price = 0.0
+        post_split_current = 0.0
 
-        post_split_current = current_price
-        if current_price > 0 and current_price < 3.0 and theoretical >= 3.0:
-            post_split_current = current_price * factor
+        if current_price > 0 and prev_close > 0:
+            if prev_close < current_price * 4.0 and prev_close < 3.0:
+                theoretical_price = prev_close * factor
+                post_split_current = current_price * factor
+            elif prev_close >= current_price * 4.0 or prev_close >= 3.0:
+                theoretical_price = prev_close
+                post_split_current = current_price * factor if current_price < 3.0 else current_price
+            else:
+                theoretical_price = prev_close * factor
+                post_split_current = current_price * factor
+        elif current_price > 0:
+            post_split_current = current_price * factor if current_price < 3.0 else current_price
+            theoretical_price = post_split_current
 
         change_pct = 0.0
-        if theoretical > 0 and post_split_current > 0:
-            change_pct = ((post_split_current - theoretical) / theoretical) * 100
+        if theoretical_price > 0 and post_split_current > 0:
+            change_pct = ((post_split_current - theoretical_price) / theoretical_price) * 100
+
+        raw_float = stock_data['raw_float']
+        if raw_float > 0:
+            if raw_float > 10_000_000: 
+                calc_float = raw_float / factor
+            else: 
+                calc_float = raw_float
+            post_split_float_str = format_shares_count(calc_float)
+        else:
+            post_split_float_str = "غير متوفر"
 
         status_emoji = "🟢" if change_pct >= 0 else "🔴"
         alert_str = "\n🔥 <b>تنبيه: هبوط أكثر من 30% (فرصة ارتداد محتملة)!</b>" if change_pct <= -30 else ""
@@ -320,14 +397,14 @@ def run_task():
         tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
         price_disp = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
-        theoretical_disp = f"${round(theoretical, 2)}" if theoretical > 0 else "غير متوفر"
+        theoretical_disp = f"${round(theoretical_price, 2)}" if theoretical_price > 0 else "غير متوفر"
 
         info = (
             f"🔹 <b>${symbol}</b>\n"
             f"⚖️ النسبة: <b>{format_ratio_ar(num, den, item['raw_text'])}</b>\n"
             f"💵 السعر الحالي: <b>{price_disp}</b>\n"
             f"🎯 السعر النظري للتقسيم: <b>{theoretical_disp}</b>\n"
-            f"📊 الفلوت المتوقع (Float): <b>{stock_data['post_split_float']}</b>\n"
+            f"📊 الفلوت المتوقع (Float): <b>{post_split_float_str}</b>\n"
             f"🏢 القطاع: <b>{stock_data['sector']}</b>\n"
             f"🛠️ نشاط السهم (Industry): <b>{stock_data['industry']}</b>\n"
             f"{status_emoji} التغير عن النظري: <b>{round(change_pct, 2)}%</b>\n"
