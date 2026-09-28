@@ -7,6 +7,22 @@ import requests
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# قاموس ترجمة القطاعات الأساسية
+SECTOR_MAP = {
+    "Healthcare": "الرعاية الصحية (Healthcare)",
+    "Technology": "التكنولوجيا (Technology)",
+    "Financial Services": "الخدمات المالية (Financial Services)",
+    "Financial": "الخدمات المالية (Financial Services)",
+    "Energy": "الطاقة (Energy)",
+    "Consumer Cyclical": "السلع الاستهلاكية الدورية (Consumer Cyclical)",
+    "Consumer Defensive": "السلع الاستهلاكية الدفاعية (Consumer Defensive)",
+    "Industrials": "الصناعة (Industrials)",
+    "Basic Materials": "المواد الأساسية (Basic Materials)",
+    "Real Estate": "العقارات (Real Estate)",
+    "Utilities": "المرافق العامة (Utilities)",
+    "Communication Services": "خدمات الاتصالات (Communication Services)"
+}
+
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Missing Telegram secrets")
@@ -60,6 +76,16 @@ def format_ratio_ar(ratio_str):
             return f"1 مقابل {int(den) if den == int(den) else den}"
     return "تقسيم عكسي"
 
+def format_shares_count(num):
+    if not num or num <= 0:
+        return "غير متوفر"
+    if num >= 1_000_000:
+        return f"{round(num / 1_000_000, 2)} مليون سهم"
+    elif num >= 1_000:
+        return f"{round(num / 1_000, 2)} ألف سهم"
+    else:
+        return f"{int(num)} سهم"
+
 def is_reverse_split(ratio_str):
     ratio_str = str(ratio_str).lower()
     if "forward" in ratio_str:
@@ -83,8 +109,43 @@ def get_yahoo_live_data(ticker):
         
         return {'price': float(price), 'prev_close': float(prev_close)}
     except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
+        print(f"Error fetching price for {ticker}: {e}")
         return {'price': 0.0, 'prev_close': 0.0}
+
+def get_company_details(ticker, ratio_num, ratio_den):
+    """جلب بيانات الشركة: القطاع، النشاط، والأسهم المتاحة للتداول (Float) بعد التقسيم"""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    sector = "غير متوفر"
+    industry = "غير متوفر"
+    post_split_float = "غير متوفر"
+    
+    try:
+        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=assetProfile,defaultKeyStatistics"
+        res = requests.get(url, headers=headers, timeout=12).json()
+        result = res.get('quoteSummary', {}).get('result', [{}])[0]
+        
+        # 1. القطاع والنشاط
+        asset_profile = result.get('assetProfile', {})
+        raw_sector = asset_profile.get('sector', '')
+        sector = SECTOR_MAP.get(raw_sector, raw_sector or "غير متوفر")
+        industry = asset_profile.get('industry', 'غير متوفر')
+        
+        # 2. الفلوت بعد التقسيم
+        key_stats = result.get('defaultKeyStatistics', {})
+        float_shares = key_stats.get('floatShares', {}).get('raw') or key_stats.get('sharesOutstanding', {}).get('raw')
+        
+        if float_shares and ratio_num and ratio_den:
+            factor = ratio_num if ratio_num > ratio_den else ratio_den
+            calc_float = float_shares / factor
+            post_split_float = format_shares_count(calc_float)
+    except Exception as e:
+        print(f"Error fetching details for {ticker}: {e}")
+        
+    return {
+        'sector': sector,
+        'industry': industry,
+        'post_split_float': post_split_float
+    }
 
 def get_prior_splits(ticker):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -150,6 +211,10 @@ def run_task():
         prior = get_prior_splits(symbol)
         
         num, den = extract_ratio_numbers(item['ratio'])
+        
+        # جلب بيانات الشركة التفصيلية
+        details = get_company_details(symbol, num, den)
+        
         theoretical = 0.0
         if prev_close > 0 and num and den:
             factor = num if num > den else den
@@ -162,13 +227,20 @@ def run_task():
         status_emoji = "🟢" if change_pct >= 0 else "🔴"
         alert_str = "\n🔥 <b>تنبيه: هبوط أكثر من 30% (فرصة ارتداد محتملة)!</b>" if change_pct <= -30 else ""
 
+        # رابط TradingView المباشر
+        tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
+
         info = (
             f"🔹 <b>${symbol}</b>\n"
             f"⚖️ النسبة: <b>{format_ratio_ar(item['ratio'])}</b>\n"
             f"💵 السعر الحالي: <b>${round(current_price, 4)}</b>\n"
             f"🎯 السعر النظري للتقسيم: <b>${round(theoretical, 2)}</b>\n"
+            f"📊 الفلوت المتوقع (Float): <b>{details['post_split_float']}</b>\n"
+            f"🏢 القطاع: <b>{details['sector']}</b>\n"
+            f"🛠️ نشاط السهم (Industry): <b>{details['industry']}</b>\n"
             f"{status_emoji} التغير عن النظري: <b>{round(change_pct, 2)}%</b>\n"
-            f"🔄 تقسيمات سابقة: <b>{prior}</b>"
+            f"🔄 تقسيمات سابقة: <b>{prior}</b>\n"
+            f"📈 الشارت: <a href='{tv_url}'> TradingView Chart</a>"
             f"{alert_str}"
         )
         updates.append(info)
