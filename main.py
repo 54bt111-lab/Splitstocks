@@ -27,7 +27,8 @@ SECTOR_MAP = {
     "Utilities": "المرافق العامة",
     "Retail Trade": "تجارة التجزئة",
     "Transportation": "النقل والمواصلات",
-    "Communications": "الاتصالات"
+    "Communications": "الاتصالات",
+    "Distribution Services": "خدمات التوزيع"
 }
 
 # قاموس ترجمة الأنشطة
@@ -38,6 +39,7 @@ INDUSTRY_MAP = {
     "Medical Specialties": "التخصصات الطبية",
     "Pharmaceuticals: Major": "صناعة الأدوية - الكبرى",
     "Pharmaceuticals: Generic": "صناعة الأدوية - العامة",
+    "Wholesale Distributors": "موزعو الجملة",
     "Auto Parts: OEM": "قطع غيار السيارات",
     "Motor Vehicles": "صناعة السيارات",
     "Industrial Machinery": "الآلات الصناعية",
@@ -51,7 +53,6 @@ INDUSTRY_MAP = {
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -59,7 +60,6 @@ def send_telegram_message(message):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-
     try:
         res = requests.post(url, json=payload, timeout=15)
         if res.ok:
@@ -85,17 +85,24 @@ def format_ratio_ar(num, den, raw_str=""):
         return f"1 مقابل {int(factor) if factor == int(factor) else round(factor, 2)}"
     return raw_str or "تقسيم عكسي"
 
+# 🎯 الدالة المحدثة لتنسيق الأعداد بدون أخطاء التقريب أو الصياغة الغريبة
 def format_shares_count(num):
     if not num or num <= 0:
         return "غير متوفر"
-    if num >= 1_000_000:
-        return f"{round(num / 1_000_000, 2)} مليون سهم"
-    elif num >= 1_000:
-        return f"{round(num / 1_000, 2)} ألف سهم"
-    else:
-        return f"{int(num)} سهم"
 
-# 1. جلب التقسيمات اليومية من ناسداك
+    num = float(num)
+    # المعالجة الدقيقة لأرقام الملايين مع منع نصوص مثل 1000.0 ألف
+    if num >= 995_000:
+        millions = round(num / 1_000_000, 2)
+        val_str = f"{int(millions)}" if millions.is_integer() else f"{millions}"
+        return f"{val_str} مليون سهم"
+    elif num >= 1_000:
+        thousands = round(num / 1_000, 2)
+        val_str = f"{int(thousands)}" if thousands.is_integer() else f"{thousands}"
+        return f"{val_str} ألف سهم"
+    else:
+        return f"{int(round(num))} سهم"
+
 def get_todays_reverse_splits():
     today_est = (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).date()
     today_str = today_est.strftime("%Y-%m-%d")
@@ -129,7 +136,6 @@ def get_todays_reverse_splits():
 
     return list(splits_dict.values())
 
-# 2. جلب بيانات TradingView وتصفية الأصول غير المرغوبة
 def get_tradingview_stock_data(ticker):
     url = "https://scanner.tradingview.com/america/scan"
     payload = {
@@ -142,6 +148,7 @@ def get_tradingview_stock_data(ticker):
             "close",
             "change",
             "float_shares_outstanding",
+            "total_shares_outstanding",
             "sector",
             "industry",
             "type",
@@ -154,6 +161,7 @@ def get_tradingview_stock_data(ticker):
         'price': 0.0,
         'change_pct': 0.0,
         'raw_float': 0.0,
+        'total_shares': 0.0,
         'sector': 'غير متوفر',
         'industry': 'غير متوفر'
     }
@@ -167,11 +175,12 @@ def get_tradingview_stock_data(ticker):
                 data['price'] = float(cols[1] or 0.0)
                 data['change_pct'] = float(cols[2] or 0.0)
                 data['raw_float'] = float(cols[3] or 0.0)
+                data['total_shares'] = float(cols[4] or 0.0)
 
-                raw_sec = cols[4] or ''
-                raw_ind = cols[5] or ''
-                entity_type = str(cols[6] or '').lower()
-                entity_subtype = str(cols[7] or '').lower()
+                raw_sec = cols[5] or ''
+                raw_ind = cols[6] or ''
+                entity_type = str(cols[7] or '').lower()
+                entity_subtype = str(cols[8] or '').lower()
 
                 invalid_types = ['fund', 'etf', 'cef', 'right', 'warrant', 'bond']
                 if any(inv in entity_type or inv in entity_subtype for inv in invalid_types):
@@ -184,7 +193,6 @@ def get_tradingview_stock_data(ticker):
 
     return data
 
-# 3. جلب عدد التقسيمات السابقة
 def get_prior_splits_count(ticker):
     headers = {"User-Agent": "Mozilla/5.0"}
     count = 0
@@ -219,17 +227,19 @@ def run_task():
         current_price = tv_data['price']
         change_pct = tv_data['change_pct']
 
-        # حساب السعر المتوقع للتقسيم
         if current_price > 0 and factor > 0:
             theoretical_price = current_price * factor
             price_theo_str = f"{round(theoretical_price, 2)}$"
         else:
             price_theo_str = "غير متوفر"
 
-        # حساب Free Float المتبقي بعد التقسيم
         raw_float = tv_data['raw_float']
-        if raw_float > 0:
-            post_split_float = raw_float / factor if factor > 1 else raw_float
+        total_shares = tv_data['total_shares']
+        base_shares = raw_float if raw_float > 0 else total_shares
+
+        if base_shares > 0:
+            # تطبيق معامل التقسيم إذا كانت البيانات ما زالت تعكس قيم ما قبل التقسيم
+            post_split_float = (base_shares / factor) if factor > 1 else base_shares
             post_split_float_str = format_shares_count(post_split_float)
         else:
             post_split_float_str = "غير متوفر"
@@ -242,7 +252,6 @@ def run_task():
 
         price_curr_str = f"{round(current_price, 4)}$" if current_price > 0 else "غير متوفر"
 
-        # 📌 القالب المطلوب فقط (بدون أي عناوين أو مقدمات)
         info = (
             f"🔹 <b>${symbol}</b>\n"
             f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
@@ -257,7 +266,6 @@ def run_task():
         updates.append(info)
 
     if updates:
-        # إرسال المخرجات المباشرة فقط
         msg = "\n\n───────────────\n\n".join(updates)
         send_telegram_message(msg)
 
