@@ -8,6 +8,7 @@ import requests
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# قاموس ترجمة القطاعات
 SECTOR_MAP = {
     "Health Technology": "الرعاية الصحية - تكنولوجيا",
     "Health Services": "الخدمات الصحية",
@@ -29,10 +30,11 @@ SECTOR_MAP = {
     "Communications": "الاتصالات"
 }
 
+# قاموس ترجمة الأنشطة
 INDUSTRY_MAP = {
     "Software - Infrastructure": "البرمجيات - البنية التحتية",
     "Software - Application": "البرمجيات - التطبيقات",
-    "Biotechnology": "التكنولوجيا الحيوية (Biotechnology)",
+    "Biotechnology": "التكنولوجيا الحيوية",
     "Medical Specialties": "التخصصات الطبية",
     "Pharmaceuticals: Major": "صناعة الأدوية - الكبرى",
     "Pharmaceuticals: Generic": "صناعة الأدوية - العامة",
@@ -49,6 +51,7 @@ INDUSTRY_MAP = {
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -56,10 +59,17 @@ def send_telegram_message(message):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
+
     try:
         res = requests.post(url, json=payload, timeout=15)
-        return res.ok
-    except:
+        if res.ok:
+            return True
+        else:
+            clean_text = re.sub(r'<[^>]+>', '', message)
+            res_retry = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_text}, timeout=15)
+            return res_retry.ok
+    except Exception as e:
+        print("❌ استثناء التليجرام:", e)
         return False
 
 def extract_ratio_numbers(ratio_str):
@@ -85,14 +95,16 @@ def format_shares_count(num):
     else:
         return f"{int(num)} سهم"
 
+# 1. جلب التقسيمات اليومية من ناسداك
 def get_todays_reverse_splits():
     today_est = (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).date()
     today_str = today_est.strftime("%Y-%m-%d")
     splits_dict = {}
+
     try:
         url = f"https://api.nasdaq.com/api/calendar/splits?date={today_str}"
         headers = {
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://www.nasdaq.com"
         }
@@ -104,6 +116,7 @@ def get_todays_reverse_splits():
                 ratio_str = str(row.get('ratio', ''))
                 num, den = extract_ratio_numbers(ratio_str)
                 is_reverse = (num is not None and den is not None and num < den) or "reverse" in ratio_str.lower()
+                
                 if symbol and is_reverse and symbol not in splits_dict:
                     splits_dict[symbol] = {
                         'symbol': symbol,
@@ -112,11 +125,12 @@ def get_todays_reverse_splits():
                         'raw_text': ratio_str
                     }
     except Exception as e:
-        print("Nasdaq Error:", e)
+        print("Nasdaq API Error:", e)
+
     return list(splits_dict.values())
 
-def get_tradingview_stock_data_strict(ticker):
-    """ استعلام دقيق يضمن تصفية البورصة والأصول الصحيحة """
+# 2. جلب بيانات TradingView والدقة في استبعاد الأصول غير العادية
+def get_tradingview_stock_data(ticker):
     url = "https://scanner.tradingview.com/america/scan"
     payload = {
         "filter": [
@@ -127,7 +141,6 @@ def get_tradingview_stock_data_strict(ticker):
             "name",
             "close",
             "change",
-            "market_cap_basic",
             "float_shares_outstanding",
             "sector",
             "industry",
@@ -136,7 +149,6 @@ def get_tradingview_stock_data_strict(ticker):
         ]
     }
     headers = {"User-Agent": "Mozilla/5.0"}
-    
     data = {
         'is_valid_stock': True,
         'price': 0.0,
@@ -154,12 +166,12 @@ def get_tradingview_stock_data_strict(ticker):
                 cols = rows[0].get("d", [])
                 data['price'] = float(cols[1] or 0.0)
                 data['change_pct'] = float(cols[2] or 0.0)
-                data['raw_float'] = float(cols[4] or 0.0)
+                data['raw_float'] = float(cols[3] or 0.0)
 
-                raw_sec = cols[5] or ''
-                raw_ind = cols[6] or ''
-                entity_type = str(cols[7] or '').lower()
-                entity_subtype = str(cols[8] or '').lower()
+                raw_sec = cols[4] or ''
+                raw_ind = cols[5] or ''
+                entity_type = str(cols[6] or '').lower()
+                entity_subtype = str(cols[7] or '').lower()
 
                 # استبعاد الصناديق والمحافظ والأسهم الممتازة
                 invalid_types = ['fund', 'etf', 'cef', 'right', 'warrant', 'bond']
@@ -169,12 +181,27 @@ def get_tradingview_stock_data_strict(ticker):
                 if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
                 if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
     except Exception as e:
-        print(f"TradingView Error for {ticker}: {e}")
+        print(f"TradingView API Error ({ticker}): {e}")
 
     return data
 
+# 3. جلب عدد التقسيمات السابقة عبر Yahoo Finance
+def get_prior_splits_count(ticker):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    count = 0
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?events=splits&interval=1d&range=10y"
+        res = requests.get(url, headers=headers, timeout=8).json()
+        splits = res.get('chart', {}).get('result', [{}])[0].get('events', {}).get('splits', {})
+        for item in splits.values():
+            if item.get('numerator', 1) < item.get('denominator', 1):
+                count += 1
+    except:
+        pass
+    return count
+
 def run_task():
-    print("🚀 بدء الفحص المحدث والدقيق...")
+    print("🚀 بدء تنفيذ الفحص اليومي للأسهم مع تحسين الحسابات وقالب المخرجات...")
     splits = get_todays_reverse_splits()
 
     if not splits:
@@ -187,45 +214,61 @@ def run_task():
         num = item['num']
         den = item['den']
 
-        tv_data = get_tradingview_stock_data_strict(symbol)
+        tv_data = get_tradingview_stock_data(symbol)
         if not tv_data['is_valid_stock']:
             continue
 
+        # معامل التقسيم (مثال: 160 / 1 = 160)
         factor = (den / num) if (num and den and num < den) else 1.0
 
-        # 1. تصحيح السعر إذا كان كود API يعرض السعر قبل التقسيم
-        raw_price = tv_data['price']
-        if raw_price > 0 and raw_price < 1.0 and factor >= 5:
-            current_price = raw_price * factor
-        else:
-            current_price = raw_price
+        current_price = tv_data['price']
+        change_pct = tv_data['change_pct']
 
-        # 2. تصحيح الفلوت بقسمته على معامل التقسيم فوراً
+        # حساب السعر المتوقع للتقسيم (إذا كان السعر الحالي هو سعر ما قبل التقسيم)
+        if current_price > 0:
+            theoretical_price = current_price * factor
+        else:
+            theoretical_price = 0.0
+
+        # حساب Free Float الفعلي المتبقي بعد التقسيم
         raw_float = tv_data['raw_float']
         if raw_float > 0:
-            adjusted_float = raw_float / factor if factor > 1 else raw_float
-            post_split_float_str = format_shares_count(adjusted_float)
+            post_split_float = raw_float / factor if factor > 1 else raw_float
+            post_split_float_str = format_shares_count(post_split_float)
         else:
             post_split_float_str = "غير متوفر"
 
-        change_pct = tv_data['change_pct']
+        prior_splits = get_prior_splits_count(symbol)
+
+        ratio_ar = format_ratio_ar(num, den, item['raw_text'])
+        sector_and_industry = f"{tv_data['sector']} / {tv_data['industry']}"
         tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
+        price_curr_str = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
+        price_theo_str = f"${round(theoretical_price, 2)}" if theoretical_price > 0 else "غير متوفر"
+
+        # 📌 النمط والقالب الثابت للمخرجات كما تم تحديده بالكامل
         info = (
             f"🔹 <b>${symbol}</b>\n"
-            f"⚖️ النسبة: <b>{html.escape(format_ratio_ar(num, den, item['raw_text']))}</b>\n"
-            f"💵 السعر المعدل (بعد التقسيم): <b>${round(current_price, 2)}</b>\n"
-            f"📊 الفلوت الفعلي المتبقي: <b>{post_split_float_str}</b>\n"
-            f"🏢 القطاع: <b>{html.escape(tv_data['sector'])}</b>\n"
-            f"🛠️ النشاط: <b>{html.escape(tv_data['industry'])}</b>\n"
-            f"📈 التغير اليومي: <b>{round(change_pct, 2)}%</b>\n"
-            f"🔗 <a href='{tv_url}'>TradingView Chart</a>"
+            f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
+            f"السعر الان : <b>{price_curr_str}</b>\n"
+            f"السعر المتوقع للتقسيم: <b>{price_theo_str}</b>\n"
+            f"Free float بعد التقسيم: <b>{post_split_float_str}</b>\n"
+            f"القطاع والنشاط: <b>{html.escape(sector_and_industry)}</b>\n"
+            f"تقسيمات سابقه: ( <b>{prior_splits}</b> )\n"
+            f"التغير الحالي ٪+-: <b>{round(change_pct, 2)}%</b>\n"
+            f"الشارت: <a href='{tv_url}'>TradingView Chart</a>"
         )
         updates.append(info)
 
     if updates:
         now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        msg = f"📊 <b>تقرير أسهم التقسيم العكسي المعدل</b>\n⏰ <code>{now_str} UTC</code>\n──────────────────\n\n" + "\n\n───────────────\n\n".join(updates)
+        msg = (
+            f"📊 <b>تقرير متابعة أسهم التقسيم العكسي اليوم</b>\n"
+            f"⏰ الوقت: <code>{now_str} UTC</code>\n"
+            f"──────────────────\n\n"
+            + "\n\n───────────────\n\n".join(updates)
+        )
         send_telegram_message(msg)
 
 if __name__ == "__main__":
