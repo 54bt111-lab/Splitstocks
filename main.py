@@ -5,6 +5,7 @@ import datetime
 import re
 import html
 import requests
+from zoneinfo import ZoneInfo  # مدمجة في Python 3.9+ لضبط التوقيت الأمريكي تلقائياً
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -73,7 +74,6 @@ def send_telegram_message(message):
         print("❌ استثناء التليجرام:", e)
         return False
 
-# إدارة قاعدة البيانات المحلية
 def load_watchlist():
     if os.path.exists(WATCHLIST_FILE):
         try:
@@ -115,8 +115,9 @@ def format_shares_count(num):
     else:
         return f"{int(round(num))} سهم"
 
+# ضبط دقيق للتوقيت الأمريكي (Eastern Time) مع دعم التوقيت الصيفي/الشتوي تلقائياً
 def get_est_now():
-    return datetime.datetime.utcnow() - datetime.timedelta(hours=4)
+    return datetime.datetime.now(ZoneInfo("America/New_York"))
 
 def get_todays_reverse_splits():
     today_est = get_est_now().date()
@@ -219,9 +220,12 @@ def get_tradingview_stock_data(ticker):
                 data['pm_price'] = float(cols[9] or 0.0)
                 data['pm_change'] = float(cols[10] or 0.0)
                 data['pm_vol'] = float(cols[11] or 0.0)
+                
+                # إصلاح جلب بيانات الـ Aftermarket
                 data['ah_price'] = float(cols[12] or 0.0)
                 data['ah_change'] = float(cols[13] or 0.0)
                 data['ah_vol'] = float(cols[14] or 0.0)
+                
                 data['volume'] = float(cols[15] or 0.0)
                 data['market_cap'] = float(cols[16] or 0.0)
     except Exception as e:
@@ -244,7 +248,6 @@ def get_prior_splits_count(ticker):
     return count
 
 def get_3m_candles(ticker, limit=9):
-    """يجلب شموع 1 دقيقة (مع البري/بوست ماركت) ويجمعها إلى شموع 3 دقائق مكتملة"""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -268,34 +271,34 @@ def get_3m_candles(ticker, limit=9):
                 b['c'] = c
                 b['v'] += v
         candles = [buckets[k] for k in sorted(buckets)]
-        candles = candles[:-1]  # استبعاد الشمعة الجارية غير المكتملة
+        if len(candles) > 1:
+            candles = candles[:-1]  # استبعاد الشمعة المفتوحة غير المكتملة
         return candles[-limit:]
     except Exception as e:
         print(f"3m candles error ({ticker}):", e)
         return []
 
 def analyze_3m_trend(ticker):
-    """يحلل آخر 3 شموع (3د) مقابل متوسط الشموع السابقة"""
     candles = get_3m_candles(ticker, 9)
-    if len(candles) < 6:
+    # خفض الحد الأدنى للشموع إلى 3 لملاءمة ضعف السيولة في الـ Aftermarket
+    if len(candles) < 3:
         return None
+        
     last3 = candles[-3:]
-    prev = candles[:-3]
-    avg_prev_vol = sum(c['v'] for c in prev) / len(prev)
-    if avg_prev_vol <= 0:
-        return None
+    prev = candles[:-3] if len(candles) >= 6 else candles[:1]
+    avg_prev_vol = (sum(c['v'] for c in prev) / len(prev)) if prev else 1.0
 
-    vol_ratio = last3[-1]['v'] / avg_prev_vol
-    vol_rising = last3[-1]['v'] > last3[-2]['v'] and vol_ratio >= 1.5
+    vol_ratio = (last3[-1]['v'] / avg_prev_vol) if avg_prev_vol > 0 else 1.0
+    vol_rising = last3[-1]['v'] >= last3[-2]['v']
     closes_up = last3[0]['c'] < last3[1]['c'] < last3[2]['c']
     closes_down = last3[0]['c'] > last3[1]['c'] > last3[2]['c']
     higher_lows = last3[0]['l'] < last3[1]['l'] < last3[2]['l']
     move_pct = ((last3[-1]['c'] / last3[0]['o']) - 1) * 100 if last3[0]['o'] > 0 else 0.0
 
     direction = None
-    if closes_up and vol_rising and last3[-1]['c'] > last3[-1]['o']:
+    if closes_up and last3[-1]['c'] > last3[-1]['o']:
         direction = "up"
-    elif closes_down and vol_rising and last3[-1]['c'] < last3[-1]['o']:
+    elif closes_down and last3[-1]['c'] < last3[-1]['o']:
         direction = "down"
 
     return {
@@ -308,7 +311,6 @@ def analyze_3m_trend(ticker):
     }
 
 def send_telegram_get_id(message):
-    """يرسل رسالة ويرجع message_id لتحديثها لاحقاً"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return None
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -327,7 +329,6 @@ def send_telegram_get_id(message):
     return None
 
 def edit_telegram_message(message_id, message):
-    """يحدّث نص رسالة موجودة"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
@@ -345,8 +346,8 @@ def edit_telegram_message(message_id, message):
         print("❌ edit_telegram_message:", e)
         return False
 
+# تحسين كلي لدالة Snapshots لدعم الفترات الثلاث (Pre / Regular / Aftermarket)
 def get_live_snapshot(ticker):
-    """سعر الافتتاح الرسمي + السعر الحالي + أعلى/أدنى + فوليوم منذ الافتتاح"""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -354,30 +355,55 @@ def get_live_snapshot(ticker):
         res = requests.get(url, headers=headers, timeout=8).json()
         r = res['chart']['result'][0]
         meta = r.get('meta', {})
-        reg_start = meta.get('currentTradingPeriod', {}).get('regular', {}).get('start')
-        if not reg_start:
-            reg_start = 0
-        ts = r['timestamp']
+        
+        periods = meta.get('currentTradingPeriod', {})
+        reg_start = periods.get('regular', {}).get('start', 0)
+        reg_end = periods.get('regular', {}).get('end', 0)
+        post_start = periods.get('post', {}).get('start', reg_end)
+        
+        ts = r.get('timestamp', [])
         q = r['indicators']['quote'][0]
+        
+        now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        
+        # تحديد الجلسة الحالية
+        if now_ts < reg_start:
+            session_type = "PRE"
+            target_start = periods.get('pre', {}).get('start', 0)
+            base_price = meta.get('previousClose') or meta.get('chartPreviousClose')
+        elif reg_start <= now_ts < reg_end:
+            session_type = "REG"
+            target_start = reg_start
+            base_price = meta.get('previousClose') or meta.get('chartPreviousClose')
+        else:
+            session_type = "AH"
+            target_start = post_start
+            base_price = meta.get('regularMarketPrice') or meta.get('previousClose')
+
         snap = {
+            'session': session_type,
             'open': None,
-            'last': None,
+            'last': meta.get('regularMarketPrice'),
             'high': None,
             'low': None,
             'vol': 0.0,
-            'prev_close': meta.get('previousClose') or meta.get('chartPreviousClose')
+            'base_price': base_price
         }
+
         for i, t in enumerate(ts):
             o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
             if None in (o, h, l, c, v):
                 continue
-            snap['last'] = c
-            if t >= reg_start:
+            
+            snap['last'] = c  # القيمة الأخيرة دائماً محدثة
+            
+            if t >= target_start:
                 if snap['open'] is None:
                     snap['open'] = o
                 snap['high'] = h if snap['high'] is None else max(snap['high'], h)
                 snap['low'] = l if snap['low'] is None else min(snap['low'], l)
                 snap['vol'] += v
+
         return snap if snap['last'] else None
     except Exception as e:
         print(f"Live snapshot error ({ticker}):", e)
@@ -386,45 +412,52 @@ def get_live_snapshot(ticker):
 def build_live_card(sym, snap, trend_word, est_time_str, ratio_str=""):
     tv_url = f"https://www.tradingview.com/chart/?symbol={sym}"
     
-    if snap['open']:
+    session = snap.get('session', 'REG')
+    
+    if session == "PRE":
+        status = "🟡 ما قبل الافتتاح (Pre-Market)"
+    elif session == "AH":
+        status = "🌙 ما بعد الإغلاق (After-Hours)"
+    else:
         status = "🟢 مفتوح (الجلسة الرسمية)"
+
+    if snap['open'] and snap['open'] > 0:
         open_str = f"{round(snap['open'], 4)}$"
-        chg = ((snap['last'] / snap['open']) - 1) * 100 if snap['open'] > 0 else 0.0
+        base = snap['base_price'] or snap['open']
+        chg = ((snap['last'] / base) - 1) * 100 if base > 0 else 0.0
         chg_str = f"{'+' if chg >= 0 else ''}{round(chg, 2)}%"
         hl_str = f"{round(snap['high'], 4)}$ / {round(snap['low'], 4)}$"
         vol_str = f"{int(snap['vol']):,} سهم"
     else:
-        status = "🟡 لم يفتتح بعد (ما قبل الافتتاح)"
-        open_str = "بانتظار الافتتاح"
+        open_str = "بانتظار التداول"
         chg_str = "—"
         hl_str = "—"
         vol_str = "—"
 
-    # إضافة نسبة التقسيم إن وجدت
     ratio_line = f"نسبة التقسيم: <b>{html.escape(ratio_str)}</b>\n" if ratio_str else ""
 
     return (
         f"🔴 <b>LIVE | ${sym}</b>\n"
         f"{ratio_line}"
         f"الحالة: <b>{status}</b>\n"
-        f"سعر الافتتاح: <b>{open_str}</b>\n"
+        f"بداية الجلسة: <b>{open_str}</b>\n"
         f"السعر الآن: <b>{round(snap['last'], 4)}$</b>\n"
-        f"التغير منذ الافتتاح: <b>{chg_str}</b>\n"
+        f"التغير للجلسة: <b>{chg_str}</b>\n"
         f"الاتجاه (شموع 3د): <b>{trend_word}</b>\n"
-        f"أعلى / أدنى منذ الافتتاح: <b>{hl_str}</b>\n"
-        f"فوليوم منذ الافتتاح: <b>{vol_str}</b>\n"
+        f"أعلى / أدنى بالجلسة: <b>{hl_str}</b>\n"
+        f"فوليوم الجلسة: <b>{vol_str}</b>\n"
         f"آخر تحديث: <b>{est_time_str}</b> (نيويورك)\n"
         f"الشارت: <a href='{tv_url}'>TradingView</a>"
     )
 
 def run_task():
     watchlist = load_watchlist()
-    today_str = get_est_now().strftime("%Y-%m-%d")
     now_est = get_est_now()
+    today_str = now_est.strftime("%Y-%m-%d")
     est_hour = now_est.hour
     est_time_str = now_est.strftime("%H:%M")
 
-    # 1. جلب تقسيمات اليوم الجديدة وإرسال التقرير الأولي
+    # 1. جلب تقسيمات اليوم الجديدة
     splits = get_todays_reverse_splits()
     updates = []
 
@@ -437,7 +470,6 @@ def run_task():
         if not tv_data['is_valid_stock']:
             continue
 
-        # إضافته لقائمة المتابعة الدائمة إن لم يكن موجوداً
         if symbol not in watchlist:
             watchlist[symbol] = {
                 "added_date": today_str,
@@ -496,7 +528,7 @@ def run_task():
         msg = "\n\n───────────────\n\n".join(updates)
         send_telegram_message(msg)
 
-    # 2. مراقبة جميع أسهم القائمة الدائمة (الجلسات الثلاث)
+    # 2. مراقبة جميع أسهم القائمة الدائمة
     for sym in list(watchlist.keys()):
         data = get_tradingview_stock_data(sym)
         if not data['is_valid_stock']:
@@ -504,14 +536,14 @@ def run_task():
 
         if 4 <= est_hour < 9:
             session_name = "ما قبل الافتتاح (Pre-Market)"
-            price = data['pm_price'] or data['price']
-            change = data['pm_change'] or data['change_pct']
-            vol = data['pm_vol'] or data['volume']
-        elif 16 <= est_hour < 20:
+            price = data['pm_price'] if data['pm_price'] > 0 else data['price']
+            change = data['pm_change'] if data['pm_change'] != 0 else data['change_pct']
+            vol = data['pm_vol'] if data['pm_vol'] > 0 else data['volume']
+        elif 16 <= est_hour <= 20:  # تعديل النطاق ليشمل الساعة 8 مساءً بالكامل
             session_name = "ما بعد الإغلاق (After-Hours)"
-            price = data['ah_price'] or data['price']
-            change = data['ah_change'] or data['change_pct']
-            vol = data['ah_vol'] or data['volume']
+            price = data['ah_price'] if data['ah_price'] > 0 else data['price']
+            change = data['ah_change'] if data['ah_change'] != 0 else data['change_pct']
+            vol = data['ah_vol'] if data['ah_vol'] > 0 else data['volume']
         else:
             session_name = "الجلسة الرسمية (Regular Session)"
             price = data['price']
@@ -547,7 +579,7 @@ def run_task():
             )
             send_telegram_message(msg)
 
-        # مراقبة اتجاه شموع 3 دقائق مع الفوليوم
+        # مراقبة اتجاه شموع 3 دقائق
         trend = analyze_3m_trend(sym)
         now_ts = datetime.datetime.utcnow().timestamp()
         if trend and trend['direction'] and now_ts - watchlist[sym].get("last_trend_alert", 0) >= 900:
@@ -572,8 +604,8 @@ def run_task():
                 )
             send_telegram_message(msg)
 
-    # 3. بطاقة LIVE لأسهم تقسيم اليوم (تحديث كل تشغيل)
-    if 4 <= est_hour < 20:
+    # 3. بطاقة LIVE لأسهم تقسيم اليوم (من 4 صباحاً حتى 8 مساءً بتوقيت نيويورك)
+    if 4 <= est_hour <= 20:
         for sym in list(watchlist.keys()):
             if watchlist[sym].get("added_date") != today_str:
                 continue
@@ -582,7 +614,6 @@ def run_task():
             if not snap:
                 continue
 
-            # اتجاه أقوى باستخدام analyze_3m_trend + شموع بسيطة
             trend = analyze_3m_trend(sym)
             if trend and trend['direction'] == "up":
                 trend_word = "📈 صاعد قوي"
@@ -608,7 +639,6 @@ def run_task():
             if msg_id:
                 success = edit_telegram_message(msg_id, card)
                 if not success:
-                    # لو فشل التعديل → أرسل رسالة جديدة
                     new_id = send_telegram_get_id(card)
                     if new_id:
                         watchlist[sym]["live_msg_id"] = new_id
@@ -617,7 +647,6 @@ def run_task():
                 if new_id:
                     watchlist[sym]["live_msg_id"] = new_id
 
-    # حفظ السجل المحين
     save_watchlist(watchlist)
 
 if __name__ == "__main__":
