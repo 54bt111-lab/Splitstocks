@@ -115,7 +115,6 @@ def format_shares_count(num):
     else:
         return f"{int(round(num))} سهم"
 
-# ضبط دقيق للتوقيت الأمريكي (Eastern Time) مع دعم التوقيت الصيفي/الشتوي تلقائياً
 def get_est_now():
     return datetime.datetime.now(ZoneInfo("America/New_York"))
 
@@ -124,21 +123,36 @@ def get_todays_reverse_splits():
     today_str = today_est.strftime("%Y-%m-%d")
     splits_dict = {}
 
+    # 1. المحاولة الأولى: API ناسداك مع ترويسات متكاملة
     try:
         url = f"https://api.nasdaq.com/api/calendar/splits?date={today_str}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
-            "Origin": "https://www.nasdaq.com"
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://www.nasdaq.com",
+            "Referer": "https://www.nasdaq.com/"
         }
         res = requests.get(url, headers=headers, timeout=12)
         if res.status_code == 200:
-            rows = res.json().get('data', {}).get('rows', []) or []
+            res_json = res.json() or {}
+            data_obj = res_json.get('data') or {}
+            rows = data_obj.get('rows') or []
+            
             for row in rows:
+                if not row:
+                    continue
                 symbol = str(row.get('symbol', '')).strip().upper()
                 ratio_str = str(row.get('ratio', ''))
                 num, den = extract_ratio_numbers(ratio_str)
-                is_reverse = (num is not None and den is not None and num < den) or "reverse" in ratio_str.lower()
+                
+                # التحقق من نوع التقسيم العكسي
+                is_reverse = False
+                if num is not None and den is not None:
+                    if num < den or den > num:
+                        is_reverse = True
+                if "reverse" in ratio_str.lower() or "1 for" in ratio_str.lower():
+                    is_reverse = True
                 
                 if symbol and is_reverse and symbol not in splits_dict:
                     splits_dict[symbol] = {
@@ -148,7 +162,30 @@ def get_todays_reverse_splits():
                         'raw_text': ratio_str
                     }
     except Exception as e:
-        print("Nasdaq API Error:", e)
+        print("❌ الخطأ في Nasdaq API:", e)
+
+    # 2. المصدر الاحتياطي في حال لم يرجع ناسداك نتائج
+    if not splits_dict:
+        try:
+            print("🔄 محاولة جلب التقسيمات من المصدر الاحتياطي (StockAnalysis)...")
+            sa_url = "https://stockanalysis.com/actions/splits/"
+            sa_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            sa_res = requests.get(sa_url, headers=sa_headers, timeout=10)
+            if sa_res.status_code == 200:
+                # استخراج الرموز التي لها تقسيم بتاريخ اليوم
+                matches = re.findall(r'/stocks/([a-z]+)/.*?(\d+-\d+|\d+:\d+|\d+ for \d+)', sa_res.text, re.IGNORECASE)
+                for sym, r_str in matches:
+                    sym_upper = sym.upper()
+                    num, den = extract_ratio_numbers(r_str)
+                    if sym_upper and sym_upper not in splits_dict:
+                        splits_dict[sym_upper] = {
+                            'symbol': sym_upper,
+                            'num': num,
+                            'den': den,
+                            'raw_text': r_str
+                        }
+        except Exception as e_fb:
+            print("❌ الخطأ في المصدر الاحتياطي:", e_fb)
 
     return list(splits_dict.values())
 
@@ -221,7 +258,6 @@ def get_tradingview_stock_data(ticker):
                 data['pm_change'] = float(cols[10] or 0.0)
                 data['pm_vol'] = float(cols[11] or 0.0)
                 
-                # إصلاح جلب بيانات الـ Aftermarket
                 data['ah_price'] = float(cols[12] or 0.0)
                 data['ah_change'] = float(cols[13] or 0.0)
                 data['ah_vol'] = float(cols[14] or 0.0)
@@ -272,7 +308,7 @@ def get_3m_candles(ticker, limit=9):
                 b['v'] += v
         candles = [buckets[k] for k in sorted(buckets)]
         if len(candles) > 1:
-            candles = candles[:-1]  # استبعاد الشمعة المفتوحة غير المكتملة
+            candles = candles[:-1]
         return candles[-limit:]
     except Exception as e:
         print(f"3m candles error ({ticker}):", e)
@@ -280,7 +316,6 @@ def get_3m_candles(ticker, limit=9):
 
 def analyze_3m_trend(ticker):
     candles = get_3m_candles(ticker, 9)
-    # خفض الحد الأدنى للشموع إلى 3 لملاءمة ضعف السيولة في الـ Aftermarket
     if len(candles) < 3:
         return None
         
@@ -346,7 +381,6 @@ def edit_telegram_message(message_id, message):
         print("❌ edit_telegram_message:", e)
         return False
 
-# تحسين كلي لدالة Snapshots لدعم الفترات الثلاث (Pre / Regular / Aftermarket)
 def get_live_snapshot(ticker):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -366,7 +400,6 @@ def get_live_snapshot(ticker):
         
         now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
         
-        # تحديد الجلسة الحالية
         if now_ts < reg_start:
             session_type = "PRE"
             target_start = periods.get('pre', {}).get('start', 0)
@@ -395,7 +428,7 @@ def get_live_snapshot(ticker):
             if None in (o, h, l, c, v):
                 continue
             
-            snap['last'] = c  # القيمة الأخيرة دائماً محدثة
+            snap['last'] = c
             
             if t >= target_start:
                 if snap['open'] is None:
@@ -456,6 +489,13 @@ def run_task():
     today_str = now_est.strftime("%Y-%m-%d")
     est_hour = now_est.hour
     est_time_str = now_est.strftime("%H:%M")
+
+    # 🛠️ إصلاح جوهري: إزالة الأسهم القديمة من المراقبة إذا تغير التاريخ
+    cleaned_watchlist = {}
+    for sym, item in watchlist.items():
+        if item.get("added_date") == today_str:
+            cleaned_watchlist[sym] = item
+    watchlist = cleaned_watchlist
 
     # 1. جلب تقسيمات اليوم الجديدة
     splits = get_todays_reverse_splits()
@@ -528,7 +568,7 @@ def run_task():
         msg = "\n\n───────────────\n\n".join(updates)
         send_telegram_message(msg)
 
-    # 2. مراقبة جميع أسهم القائمة الدائمة
+    # 2. مراقبة أسهم اليوم
     for sym in list(watchlist.keys()):
         data = get_tradingview_stock_data(sym)
         if not data['is_valid_stock']:
@@ -539,7 +579,7 @@ def run_task():
             price = data['pm_price'] if data['pm_price'] > 0 else data['price']
             change = data['pm_change'] if data['pm_change'] != 0 else data['change_pct']
             vol = data['pm_vol'] if data['pm_vol'] > 0 else data['volume']
-        elif 16 <= est_hour <= 20:  # تعديل النطاق ليشمل الساعة 8 مساءً بالكامل
+        elif 16 <= est_hour <= 20:
             session_name = "ما بعد الإغلاق (After-Hours)"
             price = data['ah_price'] if data['ah_price'] > 0 else data['price']
             change = data['ah_change'] if data['ah_change'] != 0 else data['change_pct']
@@ -553,7 +593,6 @@ def run_task():
         float_shares = data['raw_float'] or data['total_shares']
         turnover = (vol / float_shares) if float_shares > 0 else 0.0
 
-        # تنبيه فوليوم ملفت وتدوير فلوت
         if turnover >= 0.5 and not watchlist[sym].get("alerted_turnover"):
             watchlist[sym]["alerted_turnover"] = True
             msg = (
@@ -566,7 +605,6 @@ def run_task():
             )
             send_telegram_message(msg)
 
-        # تنبيه هبوط حاد وفرصة ارتداد
         if change <= -20.0 and turnover >= 0.25 and not watchlist[sym].get("alerted_rebound"):
             watchlist[sym]["alerted_rebound"] = True
             msg = (
@@ -579,7 +617,6 @@ def run_task():
             )
             send_telegram_message(msg)
 
-        # مراقبة اتجاه شموع 3 دقائق
         trend = analyze_3m_trend(sym)
         now_ts = datetime.datetime.utcnow().timestamp()
         if trend and trend['direction'] and now_ts - watchlist[sym].get("last_trend_alert", 0) >= 900:
@@ -604,7 +641,7 @@ def run_task():
                 )
             send_telegram_message(msg)
 
-    # 3. بطاقة LIVE لأسهم تقسيم اليوم (من 4 صباحاً حتى 8 مساءً بتوقيت نيويورك)
+    # 3. بطاقة LIVE لأسهم تقسيم اليوم
     if 4 <= est_hour <= 20:
         for sym in list(watchlist.keys()):
             if watchlist[sym].get("added_date") != today_str:
