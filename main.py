@@ -170,7 +170,47 @@ def format_shares_count(num):
 def get_est_now():
     return datetime.datetime.now(ZoneInfo("America/New_York"))
 
-# 1. البحث فقط عن تقسيمات اليوم الحالي
+# =========================================================
+# فلتر الفحص الدقيق لتنفيذ التقسيم الفعلي
+# =========================================================
+def verify_actual_execution(ticker, num, den):
+    """
+    يفحص حقيقة السهم بالسوق للتأكد هل طُبق التقسيم اليوم فعلياً أم أنه مجرد إعلان مؤجل ناسداك
+    """
+    if not num or not den or num >= den:
+        return False, 1.0, 0.0, 0.0
+    
+    factor = den / num
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d&includePrePost=true"
+        res = requests.get(url, headers=headers, timeout=8).json()
+        result = res.get('chart', {}).get('result', [])
+        if not result:
+            return False, factor, 0.0, 0.0
+
+        meta = result[0].get('meta', {})
+        prev_close = meta.get('previousClose') or meta.get('chartPreviousClose') or 0.0
+        current_price = meta.get('regularMarketPrice') or meta.get('preMarketPrice') or 0.0
+
+        if prev_close <= 0 or current_price <= 0:
+            return False, factor, current_price, prev_close
+
+        # إذا نفذ التقسيم العكسي فعلياً، يجب أن يرتفع سعر السهم بنسبة قريبة من المعامل (Factor)
+        # إذا كان السعر لم يتغير عن إغلاق أمس ومطابق له تماماً بدون تضاعف السعر، فالتقسيم لم يُنفذ في السوق
+        expected_price = prev_close * factor
+        
+        # نتحقق هل انحرف السعر الحالي مقترباً من السعر المتوقع المرتفع (على الأقل 50% من الارتفاع المتوقع)
+        # وفي حال السهم ما زال يتداول تحت $0.80 ومطابق لإغلاقه دون تغيير معامل التقسيم فإنه يُستبعد تلقائياً
+        if current_price < (prev_close * (factor * 0.5)) and current_price < 1.0:
+            print(f"🚫 [استبعاد كاذب] {ticker}: المعلن تقسيم 1:{factor} ولكن السعر بالسوق ${current_price} لم يرتفع إلى المتوقع ${round(expected_price, 2)}")
+            return False, factor, current_price, prev_close
+
+        return True, factor, current_price, prev_close
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء التحقق الفعلي لسهم {ticker}: {e}")
+        return False, factor, 0.0, 0.0
+
 def get_today_reverse_splits():
     today_est = get_est_now().date()
     date_str = today_est.strftime("%Y-%m-%d")
@@ -202,13 +242,19 @@ def get_today_reverse_splits():
                     is_reverse = True
                 
                 if symbol and is_reverse and symbol not in splits_dict:
-                    splits_dict[symbol] = {
-                        'symbol': symbol,
-                        'num': num,
-                        'den': den,
-                        'raw_text': ratio_str,
-                        'split_date': date_str
-                    }
+                    # فحص الصدق والتنفيذ الفعلي قبل الاعتماد
+                    is_executed, factor, curr_p, prev_p = verify_actual_execution(symbol, num, den)
+                    if is_executed:
+                        splits_dict[symbol] = {
+                            'symbol': symbol,
+                            'num': num,
+                            'den': den,
+                            'raw_text': ratio_str,
+                            'split_date': date_str,
+                            'factor': factor
+                        }
+                    else:
+                        print(f"❌ تم استبعاد {symbol} لعدم تنفيذ التقسيم بالسوق اليوم.")
     except Exception as e:
         print(f"❌ Nasdaq API Error ({date_str}):", e)
 
@@ -299,7 +345,6 @@ def get_split_candle_open(ticker):
         print(f"Split candle open error ({ticker}):", e)
     return None
 
-# جلب أحدث 9 شمعات بفريم 3 دقائق
 def get_3m_candles(ticker, limit=9):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -314,7 +359,7 @@ def get_3m_candles(ticker, limit=9):
             o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
             if None in (o, h, l, c, v):
                 continue
-            key = t - (t % 180)  # تجميع الشموع كل 3 دقائق (180 ثانية)
+            key = t - (t % 180)
             b = buckets.get(key)
             if not b:
                 buckets[key] = {'o': o, 'h': h, 'l': l, 'c': c, 'v': v}
@@ -332,7 +377,7 @@ def get_3m_candles(ticker, limit=9):
         return []
 
 def analyze_3m_trend(ticker):
-    candles = get_3m_candles(ticker, 9)  # 9 شمعات 3 دقائق
+    candles = get_3m_candles(ticker, 9)
     if len(candles) < 3:
         return None
         
@@ -406,7 +451,6 @@ def get_live_snapshot(ticker):
         print(f"Live snapshot error ({ticker}):", e)
         return None
 
-# بناء بطاقة المتابعة الحية مع وقت وتاريخ التفعيل بالدقيقة
 def build_live_card(sym, snap, trend_word, est_time_str, ratio_str="", split_open=None, activated_at=""):
     tv_url = f"https://www.tradingview.com/chart/?symbol={sym}"
     session = snap.get('session', 'REG')
@@ -458,7 +502,7 @@ def build_live_card(sym, snap, trend_word, est_time_str, ratio_str="", split_ope
 
 def run_task():
     print("=" * 50)
-    print("🚀 بدء تشغيل السكربت...")
+    print("🚀 بدء تشغيل السكربت مع الفحص الدقيق والمحقق...")
     
     watchlist = load_watchlist()
     now_est = get_est_now()
@@ -470,9 +514,7 @@ def run_task():
     print(f"⏰ الوقت الحالي بتوقيت نيويورك: {est_time_str}")
     print(f"📅 التاريخ: {today_str}")
 
-    # =========================================================
-    # 2. تنظيف القائمة: حذف أي سهم لا يخص اليوم الحالي نهائياً
-    # =========================================================
+    # تنظيف القائمة والإبقاء فقط على بيانات اليوم الحالي
     sent_today_key = f"sent_today_{today_str}"
     cleaned_watchlist = {}
     for sym, item in watchlist.items():
@@ -482,16 +524,11 @@ def run_task():
             cleaned_watchlist[sym] = item
     watchlist = cleaned_watchlist
 
-    # =========================================================
-    # 3. جلب تقسيمات اليوم فقط
-    # =========================================================
-    print("📡 جاري جلب تقسيمات اليوم حصراً من Nasdaq...")
+    # جلب أسهم اليوم المؤكد تنفيذها فقط
+    print("📡 جاري البحث والتحقق من تنفيذيّة التقسيمات اليوم بالسوق...")
     splits = get_today_reverse_splits()
-    print(f"📊 عدد تقسيمات اليوم: {len(splits)}")
+    print(f"📊 عدد التقسيمات المقبولة والمؤكدة فعلياً: {len(splits)}")
 
-    # =========================================================
-    # 4. إرسال القائمة المبدئية أولاً إذا لم تُرسل اليوم بعد
-    # =========================================================
     if not watchlist.get(sent_today_key):
         updates = []
         for item in splits:
@@ -503,48 +540,24 @@ def run_task():
             if not tv_data['is_valid_stock']:
                 continue
 
-            factor = (den / num) if (num and den and num < den) else 1.0
+            factor = item.get('factor', 1.0)
             current_price = tv_data['price']
             change_pct = tv_data['change_pct']
 
-            if current_price > 0 and factor > 1:
-                if current_price >= 1.0:
-                    expected_post_split_price = current_price
-                    price_curr_display = f"${round(current_price / factor, 4)}"
-                    eff_price = current_price
-                else:
-                    expected_post_split_price = current_price * factor
-                    price_curr_display = f"${round(current_price, 4)}"
-                    eff_price = expected_post_split_price
-                price_theo_str = f"${round(expected_post_split_price, 2)}"
-            else:
-                price_curr_display = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
-                price_theo_str = "غير متوفر"
-                expected_post_split_price = current_price
-                eff_price = current_price
+            price_curr_display = f"${round(current_price, 4)}"
+            split_open = get_split_candle_open(symbol) or current_price
 
-            split_open = get_split_candle_open(symbol)
-            if split_open and split_open > 0:
-                if factor > 1 and abs((split_open * factor) - eff_price) < abs(split_open - eff_price):
-                    base_split_price = split_open * factor
-                else:
-                    base_split_price = split_open
-            else:
-                base_split_price = eff_price
-
-            if base_split_price and base_split_price > 0 and eff_price > 0:
-                split_chg = ((eff_price - base_split_price) / base_split_price) * 100
+            if split_open and split_open > 0 and current_price > 0:
+                split_chg = ((current_price - split_open) / split_open) * 100
                 split_candle_change_str = f"{'+' if split_chg >= 0 else ''}{round(split_chg, 2)}%"
             else:
                 split_candle_change_str = "غير متوفر"
 
-            # تسجيل وقت التفعيل الحالي بالساعة والدقيقة
             watchlist[symbol] = {
                 "added_date": today_str,
                 "ratio": item['raw_text'],
-                "split_open": base_split_price,
-                "activated_at": now_datetime_str,
-                "last_trend_check": 0
+                "split_open": split_open,
+                "activated_at": now_datetime_str
             }
 
             raw_float = tv_data['raw_float']
@@ -553,26 +566,20 @@ def run_task():
             if base_shares <= 0 and tv_data['market_cap'] > 0 and current_price > 0:
                 base_shares = tv_data['market_cap'] / current_price
 
-            if base_shares > 0:
-                post_split_float = (base_shares / factor) if (base_shares > 2_000_000 and factor > 1) else base_shares
-                post_split_float_str = format_shares_count(post_split_float)
-            else:
-                post_split_float_str = "غير متوفر"
+            post_split_float_str = format_shares_count(base_shares)
 
             prior_splits = get_prior_splits_count(symbol)
             ratio_ar = format_ratio_ar(num, den, item['raw_text'])
             sector_and_industry = f"{tv_data['sector']} / {tv_data['industry']}"
             tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
-
             change_pct_str = f"{'+' if change_pct >= 0 else ''}{round(change_pct, 2)}%"
 
             info = (
                 f"🔷 <b>${symbol}</b>\n"
                 f"تاريخ التقسيم: <b>اليوم ({today_str})</b>\n"
-                f"وقت التسجيل والتفعيل: <b>{now_datetime_str}</b>\n"
+                f"وقت التنفيذ والتفعيل: <b>{now_datetime_str}</b>\n"
                 f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
                 f"السعر الان : <b>{price_curr_display}</b>\n"
-                f"السعر المتوقع للتقسيم: <b>{price_theo_str}</b>\n"
                 f"Free float بعد التقسيم: <b>{post_split_float_str}</b>\n"
                 f"القطاع والنشاط: <b>{html.escape(sector_and_industry)}</b>\n"
                 f"الدولة: <b>{html.escape(tv_data['country'])}</b>\n"
@@ -584,21 +591,19 @@ def run_task():
             updates.append(info)
 
         if updates:
-            header = f"📌 <b>قائمة أسهم التقسيم العكسي المقررة لليوم ({today_str})</b>\n\n"
+            header = f"📌 <b>أسهم التقسيم العكسي المؤكد تنفيذها اليوم ({today_str})</b>\n\n"
             msg = header + "\n\n───────────────\n\n".join(updates)
             send_telegram_message(msg)
-            print(f"✅ تم إرسال القائمة المبدئية ({len(updates)} أسهم)")
+            print(f"✅ تم إرسال الأسهم المؤكدة ({len(updates)} أسهم)")
         else:
-            send_telegram_message(f"📌 <b>أسهم التقسيم العكسي — اليوم ({today_str})</b>\n\nلا توجد تقسيمات عكسية مقررة لليوم حتى الآن.")
-            print("ℹ️ لا توجد تقسيمات اليوم - تم إرسال الرسالة المبدئية")
+            send_telegram_message(f"📌 <b>أسهم التقسيم العكسي — اليوم ({today_str})</b>\n\nلا توجد تقسيمات عكسية مؤكدة ومطبقة فعلياً في البورصة حتى الآن.")
+            print("ℹ️ لا توجد تقسيمات مؤكدة اليوم - تم إرسال رسالة التوضيح")
         
         watchlist[sent_today_key] = True
 
-    # =========================================================
-    # 5. تفعيل وتحديث بطاقات LIVE المباشرة
-    # =========================================================
+    # تحديث بطاقات LIVE الحية للأسهم المؤكدة فقط
     if 4 <= est_hour <= 20:
-        print("📡 بدء تحديث بطاقات LIVE لأسهم اليوم...")
+        print("📡 تحديث بطاقات LIVE المباشرة...")
         for sym, item_data in list(watchlist.items()):
             if sym.startswith("sent_today_"):
                 continue
@@ -607,7 +612,6 @@ def run_task():
             if not snap:
                 continue
 
-            # تحليل الاتجاه بـ 9 شموع (3 دقائق)
             trend = analyze_3m_trend(sym)
             if trend and trend['direction'] == "up":
                 trend_word = "📈 صاعد قوي"
@@ -649,12 +653,12 @@ def run_task():
                 if new_id:
                     watchlist[sym]["live_msg_id"] = new_id
 
-        print("✅ تم تحديث بطاقات LIVE")
+        print("✅ تم تحديث بطاقات LIVE المباشرة")
 
     save_watchlist(watchlist)
     print("✅ تم حفظ الـ watchlist")
     print("=" * 50)
-    print("🏁 انتهى تشغيل السكربت")
+    print("🏁 انتهى تشغيل السكربت بنجاح")
 
 if __name__ == "__main__":
     run_task()
