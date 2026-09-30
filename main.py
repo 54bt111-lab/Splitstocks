@@ -67,6 +67,7 @@ COUNTRY_MAP = {
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("❌ TELEGRAM_BOT_TOKEN أو TELEGRAM_CHAT_ID غير موجود")
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -80,8 +81,40 @@ def send_telegram_message(message):
         if res.ok:
             return True
         else:
+            print(f"❌ Telegram Error: {res.status_code} - {res.text}")
             clean_text = re.sub(r'<[^>]+>', '', message)
             res_retry = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_text}, timeout=15)
             return res_retry.ok
     except Exception as e:
-        print("❌
+        print("❌ استثناء التليجرام:", e)
+        return False
+
+def load_watchlist():
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_watchlist(watchlist):
+    with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(watchlist, f, ensure_ascii=False, indent=4)
+
+def extract_ratio_numbers(ratio_str):
+    ratio_str = str(ratio_str).lower().strip()
+    match = re.search(r'(\d+(?:\.\d+)?)\s*(?:-?\s*for\s*-?|:|-|to|\/)\s*(\d+(?:\.\d+)?)', ratio_str)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    return None, None
+
+def format_ratio_ar(num, den, raw_str=""):
+    if num and den and num > 0 and den > 0:
+        factor = den / num if num < den else num / den
+        return f"1 مقابل {int(factor) if factor == int(factor) else round(factor, 2)}"
+    return raw_str or "تقسيم عكسي"
+
+def format_shares_count(num):
+    if not num or num <= 0:
+        return "غير متوفر"
