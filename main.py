@@ -52,6 +52,48 @@ INDUSTRY_MAP = {
     "Engineering & Construction": "الهندسة والإنشاءات"
 }
 
+COUNTRY_MAP = {
+    "US": "الولايات المتحدة",
+    "USA": "الولايات المتحدة",
+    "United States": "الولايات المتحدة",
+    "CA": "كندا",
+    "Canada": "كندا",
+    "CN": "الصين",
+    "China": "الصين",
+    "IL": "إسرائيل",
+    "Israel": "إسرائيل",
+    "KY": "جزر كايمان",
+    "Cayman Islands": "جزر كايمان",
+    "BM": "برمودا",
+    "Bermuda": "برمودا",
+    "GB": "المملكة المتحدة",
+    "United Kingdom": "المملكة المتحدة",
+    "HK": "هونغ كونغ",
+    "Hong Kong": "هونغ كونغ",
+    "SG": "سنغافورة",
+    "Singapore": "سنغافورة",
+    "JP": "اليابان",
+    "Japan": "اليابان",
+    "DE": "ألمانيا",
+    "Germany": "ألمانيا",
+    "FR": "فرنسا",
+    "France": "فرنسا",
+    "AU": "أستراليا",
+    "Australia": "أستراليا",
+    "IE": "أيرلندا",
+    "Ireland": "أيرلندا",
+    "CH": "سويسرا",
+    "Switzerland": "سويسرا",
+    "NL": "هولندا",
+    "Netherlands": "هولندا",
+    "SE": "السويد",
+    "Sweden": "السويد",
+    "GR": "اليونان",
+    "Greece": "اليونان",
+    "KR": "كوريا الجنوبية",
+    "South Korea": "كوريا الجنوبية"
+}
+
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -172,7 +214,6 @@ def get_todays_reverse_splits():
             sa_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             sa_res = requests.get(sa_url, headers=sa_headers, timeout=10)
             if sa_res.status_code == 200:
-                # استخراج الرموز التي لها تقسيم بتاريخ اليوم
                 matches = re.findall(r'/stocks/([a-z]+)/.*?(\d+-\d+|\d+:\d+|\d+ for \d+)', sa_res.text, re.IGNORECASE)
                 for sym, r_str in matches:
                     sym_upper = sym.upper()
@@ -213,7 +254,8 @@ def get_tradingview_stock_data(ticker):
             "postmarket_change",
             "postmarket_volume",
             "volume",
-            "market_cap_basic"
+            "market_cap_basic",
+            "country"
         ]
     }
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -225,6 +267,7 @@ def get_tradingview_stock_data(ticker):
         'total_shares': 0.0,
         'sector': 'غير متوفر',
         'industry': 'غير متوفر',
+        'country': 'غير متوفر',
         'volume': 0.0,
         'market_cap': 0.0,
         'pm_price': 0.0, 'pm_change': 0.0, 'pm_vol': 0.0,
@@ -264,6 +307,10 @@ def get_tradingview_stock_data(ticker):
                 
                 data['volume'] = float(cols[15] or 0.0)
                 data['market_cap'] = float(cols[16] or 0.0)
+
+                raw_country = cols[17] if len(cols) > 17 and cols[17] else ''
+                if raw_country:
+                    data['country'] = COUNTRY_MAP.get(raw_country, raw_country)
     except Exception as e:
         print(f"TradingView API Error ({ticker}): {e}")
 
@@ -471,11 +518,11 @@ def build_live_card(sym, snap, trend_word, est_time_str, ratio_str="", split_ope
         status = "🟢 مفتوح (الجلسة الرسمية)"
 
     if snap['open'] and snap['open'] > 0:
-        open_str = f"{round(snap['open'], 4)}$"
+        open_str = f"${round(snap['open'], 4)}"
         base = snap['base_price'] or snap['open']
         chg = ((snap['last'] / base) - 1) * 100 if base > 0 else 0.0
         chg_str = f"{'+' if chg >= 0 else ''}{round(chg, 2)}%"
-        hl_str = f"{round(snap['high'], 4)}$ / {round(snap['low'], 4)}$"
+        hl_str = f"${round(snap['high'], 4)} / ${round(snap['low'], 4)}"
         vol_str = f"{int(snap['vol']):,} سهم"
     else:
         open_str = "بانتظار التداول"
@@ -485,18 +532,18 @@ def build_live_card(sym, snap, trend_word, est_time_str, ratio_str="", split_ope
 
     if split_open and split_open > 0 and snap.get('last') and snap['last'] > 0:
         split_chg = ((snap['last'] - split_open) / split_open) * 100
-        split_chg_line = f"التغير من شمعة التقسيم: <b>{'+' if split_chg >= 0 else ''}{round(split_chg, 2)}%</b>\n"
+        split_chg_line = f"التغير من شمعة التقسيم ٪+-: <b>{'+' if split_chg >= 0 else ''}{round(split_chg, 2)}%</b>\n"
     else:
         split_chg_line = ""
 
-    ratio_line = f"نسبة التقسيم: <b>{html.escape(ratio_str)}</b>\n" if ratio_str else ""
+    ratio_line = f"نسبة التقسيم : <b>{html.escape(ratio_str)}</b>\n" if ratio_str else ""
 
     return (
         f"🔴 <b>LIVE | ${sym}</b>\n"
         f"{ratio_line}"
         f"الحالة: <b>{status}</b>\n"
         f"بداية الجلسة: <b>{open_str}</b>\n"
-        f"السعر الآن: <b>{round(snap['last'], 4)}$</b>\n"
+        f"السعر الآن: <b>${round(snap['last'], 4)}</b>\n"
         f"التغير للجلسة: <b>{chg_str}</b>\n"
         f"{split_chg_line}"
         f"الاتجاه (شموع 3د): <b>{trend_word}</b>\n"
@@ -513,14 +560,14 @@ def run_task():
     est_hour = now_est.hour
     est_time_str = now_est.strftime("%H:%M")
 
-    # 🛠️ إصلاح جوهري: إزالة الأسهم القديمة من المراقبة إذا تغير التاريخ
+    # 🛠️ إزالة الأسهم القديمة من المراقبة إذا تغير التاريخ
     cleaned_watchlist = {}
     for sym, item in watchlist.items():
         if item.get("added_date") == today_str:
             cleaned_watchlist[sym] = item
     watchlist = cleaned_watchlist
 
-    # 1. جلب تقسيمات اليوم الجديدة
+    # 1. جلب تقسيمات اليوم الجديدة وإرسال التقرير
     splits = get_todays_reverse_splits()
     updates = []
 
@@ -541,20 +588,19 @@ def run_task():
             if current_price > 0 and factor > 1:
                 if current_price >= 1.0:
                     expected_post_split_price = current_price
-                    price_curr_display = f"{round(current_price / factor, 4)}$"
+                    price_curr_display = f"${round(current_price / factor, 4)}"
                     eff_price = current_price
                 else:
                     expected_post_split_price = current_price * factor
-                    price_curr_display = f"{round(current_price, 4)}$"
+                    price_curr_display = f"${round(current_price, 4)}"
                     eff_price = expected_post_split_price
-                price_theo_str = f"{round(expected_post_split_price, 2)}$"
+                price_theo_str = f"${round(expected_post_split_price, 2)}"
             else:
-                price_curr_display = f"{round(current_price, 4)}$" if current_price > 0 else "غير متوفر"
+                price_curr_display = f"${round(current_price, 4)}" if current_price > 0 else "غير متوفر"
                 price_theo_str = "غير متوفر"
                 expected_post_split_price = current_price
                 eff_price = current_price
 
-            # حساب التغير من شمعة التقسيم
             split_open = get_split_candle_open(symbol)
             base_split_price = split_open if (split_open and split_open > 0) else expected_post_split_price
 
@@ -567,8 +613,6 @@ def run_task():
             watchlist[symbol] = {
                 "added_date": today_str,
                 "ratio": item['raw_text'],
-                "alerted_turnover": False,
-                "alerted_rebound": False,
                 "split_open": base_split_price
             }
 
@@ -589,15 +633,19 @@ def run_task():
             sector_and_industry = f"{tv_data['sector']} / {tv_data['industry']}"
             tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
+            change_pct_str = f"{'+' if change_pct >= 0 else ''}{round(change_pct, 2)}%"
+
+            # القالب المحدث متضمناً الدولة بعد القطاع والنشاط مباشرة
             info = (
-                f"🔹 <b>${symbol}</b>\n"
+                f"🔷 <b>${symbol}</b>\n"
                 f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
                 f"السعر الان : <b>{price_curr_display}</b>\n"
                 f"السعر المتوقع للتقسيم: <b>{price_theo_str}</b>\n"
                 f"Free float بعد التقسيم: <b>{post_split_float_str}</b>\n"
                 f"القطاع والنشاط: <b>{html.escape(sector_and_industry)}</b>\n"
+                f"الدولة: <b>{html.escape(tv_data['country'])}</b>\n"
                 f"تقسيمات سابقه: ( <b>{prior_splits}</b> )\n"
-                f"التغير الحالي ٪+-: <b>{round(change_pct, 2)}%</b>\n"
+                f"التغير الحالي ٪+-: <b>{change_pct_str}</b>\n"
                 f"التغير من شمعة التقسيم ٪+-: <b>{split_candle_change_str}</b>\n"
                 f"الشارت: <a href='{tv_url}'>TradingView Chart</a>"
             )
@@ -607,80 +655,7 @@ def run_task():
         msg = "\n\n───────────────\n\n".join(updates)
         send_telegram_message(msg)
 
-    # 2. مراقبة أسهم اليوم
-    for sym in list(watchlist.keys()):
-        data = get_tradingview_stock_data(sym)
-        if not data['is_valid_stock']:
-            continue
-
-        if 4 <= est_hour < 9:
-            session_name = "ما قبل الافتتاح (Pre-Market)"
-            price = data['pm_price'] if data['pm_price'] > 0 else data['price']
-            change = data['pm_change'] if data['pm_change'] != 0 else data['change_pct']
-            vol = data['pm_vol'] if data['pm_vol'] > 0 else data['volume']
-        elif 16 <= est_hour <= 20:
-            session_name = "ما بعد الإغلاق (After-Hours)"
-            price = data['ah_price'] if data['ah_price'] > 0 else data['price']
-            change = data['ah_change'] if data['ah_change'] != 0 else data['change_pct']
-            vol = data['ah_vol'] if data['ah_vol'] > 0 else data['volume']
-        else:
-            session_name = "الجلسة الرسمية (Regular Session)"
-            price = data['price']
-            change = data['change_pct']
-            vol = data['volume']
-
-        float_shares = data['raw_float'] or data['total_shares']
-        turnover = (vol / float_shares) if float_shares > 0 else 0.0
-
-        if turnover >= 0.5 and not watchlist[sym].get("alerted_turnover"):
-            watchlist[sym]["alerted_turnover"] = True
-            msg = (
-                f"🚨 <b>تنبيه فوليوم ملفت ({sym})</b>\n"
-                f"الجلسة: <b>{session_name}</b>\n"
-                f"السعر الحالي: <b>{round(price, 4)}$</b> ({round(change, 2)}%)\n"
-                f"حجم التداول: <b>{int(vol):,}</b> سهم\n"
-                f"نسبة تدوير الفلوت (Turnover): <b>{round(turnover * 100, 1)}%</b>\n"
-                f"الشارت: <a href='https://www.tradingview.com/chart/?symbol={sym}'>TradingView</a>"
-            )
-            send_telegram_message(msg)
-
-        if change <= -20.0 and turnover >= 0.25 and not watchlist[sym].get("alerted_rebound"):
-            watchlist[sym]["alerted_rebound"] = True
-            msg = (
-                f"⚠️ <b>رصد هبوط حاد وفرصة ارتداد ({sym})</b>\n"
-                f"الجلسة: <b>{session_name}</b>\n"
-                f"نسبة الهبوط: <b>{round(change, 2)}%</b>\n"
-                f"السعر الحالي: <b>{round(price, 4)}$</b>\n"
-                f"الحجم المتداول: <b>{int(vol):,}</b> سهم\n"
-                f"💡 <i>منطقة ارتداد مضاربي متوقعة مع ارتفاع الفوليوم.</i>"
-            )
-            send_telegram_message(msg)
-
-        trend = analyze_3m_trend(sym)
-        now_ts = datetime.datetime.utcnow().timestamp()
-        if trend and trend['direction'] and now_ts - watchlist[sym].get("last_trend_alert", 0) >= 900:
-            watchlist[sym]["last_trend_alert"] = now_ts
-            if trend['direction'] == "up":
-                msg = (
-                    f"📈 <b>فرصة مضاربة محتملة ({sym})</b>\n"
-                    f"اتجاه شموع 3د: <b>صاعد مع ارتفاع فوليوم</b>\n"
-                    f"الحركة (آخر 3 شموع): <b>{round(trend['move_pct'], 2)}%</b>\n"
-                    f"فوليوم آخر شمعة: <b>{int(trend['last_vol']):,}</b> ({round(trend['vol_ratio'], 1)}x المتوسط)\n"
-                    f"قيعان صاعدة: <b>{'نعم' if trend['higher_lows'] else 'لا'}</b>\n"
-                    f"السعر: <b>{round(trend['last_close'], 4)}$</b>\n"
-                    f"الشارت: <a href='https://www.tradingview.com/chart/?symbol={sym}'>TradingView</a>"
-                )
-            else:
-                msg = (
-                    f"🔻 <b>تحذير ضغط بيعي ({sym})</b>\n"
-                    f"اتجاه شموع 3د: <b>هابط مع ارتفاع فوليوم</b>\n"
-                    f"الحركة (آخر 3 شموع): <b>{round(trend['move_pct'], 2)}%</b>\n"
-                    f"فوليوم آخر شمعة: <b>{int(trend['last_vol']):,}</b> ({round(trend['vol_ratio'], 1)}x المتوسط)\n"
-                    f"السعر: <b>{round(trend['last_close'], 4)}$</b>"
-                )
-            send_telegram_message(msg)
-
-    # 3. بطاقة LIVE لأسهم تقسيم اليوم
+    # 2. بطاقة LIVE لأسهم اليوم
     if 4 <= est_hour <= 20:
         for sym in list(watchlist.keys()):
             if watchlist[sym].get("added_date") != today_str:
