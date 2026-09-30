@@ -5,7 +5,7 @@ import datetime
 import re
 import html
 import requests
-from zoneinfo import ZoneInfo  # مدمجة في Python 3.9+ لضبط التوقيت الأمريكي تلقائياً
+from zoneinfo import ZoneInfo
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -53,45 +53,16 @@ INDUSTRY_MAP = {
 }
 
 COUNTRY_MAP = {
-    "US": "الولايات المتحدة",
-    "USA": "الولايات المتحدة",
-    "United States": "الولايات المتحدة",
-    "CA": "كندا",
-    "Canada": "كندا",
-    "CN": "الصين",
-    "China": "الصين",
-    "IL": "إسرائيل",
-    "Israel": "إسرائيل",
-    "KY": "جزر كايمان",
-    "Cayman Islands": "جزر كايمان",
-    "BM": "برمودا",
-    "Bermuda": "برمودا",
-    "GB": "المملكة المتحدة",
-    "United Kingdom": "المملكة المتحدة",
-    "HK": "هونغ كونغ",
-    "Hong Kong": "هونغ كونغ",
-    "SG": "سنغافورة",
-    "Singapore": "سنغافورة",
-    "JP": "اليابان",
-    "Japan": "اليابان",
-    "DE": "ألمانيا",
-    "Germany": "ألمانيا",
-    "FR": "فرنسا",
-    "France": "فرنسا",
-    "AU": "أستراليا",
-    "Australia": "أستراليا",
-    "IE": "أيرلندا",
-    "Ireland": "أيرلندا",
-    "CH": "سويسرا",
-    "Switzerland": "سويسرا",
-    "NL": "هولندا",
-    "Netherlands": "هولندا",
-    "SE": "السويد",
-    "Sweden": "السويد",
-    "GR": "اليونان",
-    "Greece": "اليونان",
-    "KR": "كوريا الجنوبية",
-    "South Korea": "كوريا الجنوبية"
+    "US": "الولايات المتحدة", "USA": "الولايات المتحدة", "United States": "الولايات المتحدة",
+    "CA": "كندا", "Canada": "كندا", "CN": "الصين", "China": "الصين",
+    "IL": "إسرائيل", "Israel": "إسرائيل", "KY": "جزر كايمان", "Cayman Islands": "جزر كايمان",
+    "BM": "برمودا", "Bermuda": "برمودا", "GB": "المملكة المتحدة", "United Kingdom": "المملكة المتحدة",
+    "HK": "هونغ كونغ", "Hong Kong": "هونغ كونغ", "SG": "سنغافورة", "Singapore": "سنغافورة",
+    "JP": "اليابان", "Japan": "اليابان", "DE": "ألمانيا", "Germany": "ألمانيا",
+    "FR": "فرنسا", "France": "فرنسا", "AU": "أستراليا", "Australia": "أستراليا",
+    "IE": "أيرلندا", "Ireland": "أيرلندا", "CH": "سويسرا", "Switzerland": "سويسرا",
+    "NL": "هولندا", "Netherlands": "هولندا", "SE": "السويد", "Sweden": "السويد",
+    "GR": "اليونان", "Greece": "اليونان", "KR": "كوريا الجنوبية", "South Korea": "كوريا الجنوبية"
 }
 
 def send_telegram_message(message):
@@ -160,73 +131,51 @@ def format_shares_count(num):
 def get_est_now():
     return datetime.datetime.now(ZoneInfo("America/New_York"))
 
-def get_todays_reverse_splits():
+def get_recent_reverse_splits(days=14):
+    """ جلب التقسيمات العكسية خلال الـ 14 يوماً الماضية (أسبوعين كاملين) """
     today_est = get_est_now().date()
-    today_str = today_est.strftime("%Y-%m-%d")
+    start_date = today_est - datetime.timedelta(days=days)
     splits_dict = {}
 
-    # 1. المحاولة الأولى: API ناسداك مع ترويسات متكاملة
-    try:
-        url = f"https://api.nasdaq.com/api/calendar/splits?date={today_str}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://www.nasdaq.com",
-            "Referer": "https://www.nasdaq.com/"
-        }
-        res = requests.get(url, headers=headers, timeout=12)
-        if res.status_code == 200:
-            res_json = res.json() or {}
-            data_obj = res_json.get('data') or {}
-            rows = data_obj.get('rows') or []
-            
-            for row in rows:
-                if not row:
-                    continue
-                symbol = str(row.get('symbol', '')).strip().upper()
-                ratio_str = str(row.get('ratio', ''))
-                num, den = extract_ratio_numbers(ratio_str)
-                
-                # التحقق من نوع التقسيم العكسي
-                is_reverse = False
-                if num is not None and den is not None:
-                    if num < den or den > num:
-                        is_reverse = True
-                if "reverse" in ratio_str.lower() or "1 for" in ratio_str.lower():
-                    is_reverse = True
-                
-                if symbol and is_reverse and symbol not in splits_dict:
-                    splits_dict[symbol] = {
-                        'symbol': symbol,
-                        'num': num,
-                        'den': den,
-                        'raw_text': ratio_str
-                    }
-    except Exception as e:
-        print("❌ الخطأ في Nasdaq API:", e)
-
-    # 2. المصدر الاحتياطي في حال لم يرجع ناسداك نتائج
-    if not splits_dict:
+    curr_date = start_date
+    while curr_date <= today_est:
+        date_str = curr_date.strftime("%Y-%m-%d")
         try:
-            print("🔄 محاولة جلب التقسيمات من المصدر الاحتياطي (StockAnalysis)...")
-            sa_url = "https://stockanalysis.com/actions/splits/"
-            sa_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-            sa_res = requests.get(sa_url, headers=sa_headers, timeout=10)
-            if sa_res.status_code == 200:
-                matches = re.findall(r'/stocks/([a-z]+)/.*?(\d+-\d+|\d+:\d+|\d+ for \d+)', sa_res.text, re.IGNORECASE)
-                for sym, r_str in matches:
-                    sym_upper = sym.upper()
-                    num, den = extract_ratio_numbers(r_str)
-                    if sym_upper and sym_upper not in splits_dict:
-                        splits_dict[sym_upper] = {
-                            'symbol': sym_upper,
+            url = f"https://api.nasdaq.com/api/calendar/splits?date={date_str}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Origin": "https://www.nasdaq.com",
+                "Referer": "https://www.nasdaq.com/"
+            }
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                rows = (res.json() or {}).get('data', {}).get('rows') or []
+                for row in rows:
+                    if not row:
+                        continue
+                    symbol = str(row.get('symbol', '')).strip().upper()
+                    ratio_str = str(row.get('ratio', ''))
+                    num, den = extract_ratio_numbers(ratio_str)
+                    
+                    is_reverse = False
+                    if num is not None and den is not None and (num < den or den > num):
+                        is_reverse = True
+                    if "reverse" in ratio_str.lower() or "1 for" in ratio_str.lower():
+                        is_reverse = True
+                    
+                    if symbol and is_reverse and symbol not in splits_dict:
+                        splits_dict[symbol] = {
+                            'symbol': symbol,
                             'num': num,
                             'den': den,
-                            'raw_text': r_str
+                            'raw_text': ratio_str,
+                            'split_date': date_str
                         }
-        except Exception as e_fb:
-            print("❌ الخطأ في المصدر الاحتياطي:", e_fb)
+        except Exception as e:
+            print(f"❌ Nasdaq API Error ({date_str}):", e)
+        curr_date += datetime.timedelta(days=1)
 
     return list(splits_dict.values())
 
@@ -238,40 +187,17 @@ def get_tradingview_stock_data(ticker):
             {"left": "exchange", "operation": "in_range", "right": ["NASDAQ", "NYSE", "AMEX"]}
         ],
         "columns": [
-            "name",
-            "close",
-            "change",
-            "float_shares_outstanding",
-            "total_shares_outstanding",
-            "sector",
-            "industry",
-            "type",
-            "subtype",
-            "premarket_close",
-            "premarket_change",
-            "premarket_volume",
-            "postmarket_close",
-            "postmarket_change",
-            "postmarket_volume",
-            "volume",
-            "market_cap_basic",
-            "country"
+            "name", "close", "change", "float_shares_outstanding", "total_shares_outstanding",
+            "sector", "industry", "type", "subtype", "premarket_close", "premarket_change",
+            "premarket_volume", "postmarket_close", "postmarket_change", "postmarket_volume",
+            "volume", "market_cap_basic", "country"
         ]
     }
     headers = {"User-Agent": "Mozilla/5.0"}
     data = {
-        'is_valid_stock': True,
-        'price': 0.0,
-        'change_pct': 0.0,
-        'raw_float': 0.0,
-        'total_shares': 0.0,
-        'sector': 'غير متوفر',
-        'industry': 'غير متوفر',
-        'country': 'غير متوفر',
-        'volume': 0.0,
-        'market_cap': 0.0,
-        'pm_price': 0.0, 'pm_change': 0.0, 'pm_vol': 0.0,
-        'ah_price': 0.0, 'ah_change': 0.0, 'ah_vol': 0.0
+        'is_valid_stock': True, 'price': 0.0, 'change_pct': 0.0, 'raw_float': 0.0,
+        'total_shares': 0.0, 'sector': 'غير متوفر', 'industry': 'غير متوفر', 'country': 'غير متوفر',
+        'volume': 0.0, 'market_cap': 0.0
     }
 
     try:
@@ -297,14 +223,6 @@ def get_tradingview_stock_data(ticker):
                 if raw_sec: data['sector'] = SECTOR_MAP.get(raw_sec, raw_sec)
                 if raw_ind: data['industry'] = INDUSTRY_MAP.get(raw_ind, raw_ind)
 
-                data['pm_price'] = float(cols[9] or 0.0)
-                data['pm_change'] = float(cols[10] or 0.0)
-                data['pm_vol'] = float(cols[11] or 0.0)
-                
-                data['ah_price'] = float(cols[12] or 0.0)
-                data['ah_change'] = float(cols[13] or 0.0)
-                data['ah_vol'] = float(cols[14] or 0.0)
-                
                 data['volume'] = float(cols[15] or 0.0)
                 data['market_cap'] = float(cols[16] or 0.0)
 
@@ -387,11 +305,8 @@ def analyze_3m_trend(ticker):
     avg_prev_vol = (sum(c['v'] for c in prev) / len(prev)) if prev else 1.0
 
     vol_ratio = (last3[-1]['v'] / avg_prev_vol) if avg_prev_vol > 0 else 1.0
-    vol_rising = last3[-1]['v'] >= last3[-2]['v']
     closes_up = last3[0]['c'] < last3[1]['c'] < last3[2]['c']
     closes_down = last3[0]['c'] > last3[1]['c'] > last3[2]['c']
-    higher_lows = last3[0]['l'] < last3[1]['l'] < last3[2]['l']
-    move_pct = ((last3[-1]['c'] / last3[0]['o']) - 1) * 100 if last3[0]['o'] > 0 else 0.0
 
     direction = None
     if closes_up and last3[-1]['c'] > last3[-1]['o']:
@@ -399,14 +314,7 @@ def analyze_3m_trend(ticker):
     elif closes_down and last3[-1]['c'] < last3[-1]['o']:
         direction = "down"
 
-    return {
-        'direction': direction,
-        'vol_ratio': vol_ratio,
-        'move_pct': move_pct,
-        'higher_lows': higher_lows,
-        'last_close': last3[-1]['c'],
-        'last_vol': last3[-1]['v']
-    }
+    return {'direction': direction, 'vol_ratio': vol_ratio}
 
 def send_telegram_get_id(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -477,13 +385,8 @@ def get_live_snapshot(ticker):
             base_price = meta.get('regularMarketPrice') or meta.get('previousClose')
 
         snap = {
-            'session': session_type,
-            'open': None,
-            'last': meta.get('regularMarketPrice'),
-            'high': None,
-            'low': None,
-            'vol': 0.0,
-            'base_price': base_price
+            'session': session_type, 'open': None, 'last': meta.get('regularMarketPrice'),
+            'high': None, 'low': None, 'vol': 0.0, 'base_price': base_price
         }
 
         for i, t in enumerate(ts):
@@ -492,10 +395,8 @@ def get_live_snapshot(ticker):
                 continue
             
             snap['last'] = c
-            
             if t >= target_start:
-                if snap['open'] is None:
-                    snap['open'] = o
+                if snap['open'] is None: snap['open'] = o
                 snap['high'] = h if snap['high'] is None else max(snap['high'], h)
                 snap['low'] = l if snap['low'] is None else min(snap['low'], l)
                 snap['vol'] += v
@@ -507,7 +408,6 @@ def get_live_snapshot(ticker):
 
 def build_live_card(sym, snap, trend_word, est_time_str, ratio_str="", split_open=None):
     tv_url = f"https://www.tradingview.com/chart/?symbol={sym}"
-    
     session = snap.get('session', 'REG')
     
     if session == "PRE":
@@ -560,21 +460,26 @@ def run_task():
     est_hour = now_est.hour
     est_time_str = now_est.strftime("%H:%M")
 
-    # 🛠️ إزالة الأسهم القديمة من المراقبة إذا تغير التاريخ
+    # تحديد تاريخ 14 يوماً مضت لاستبقاء الأسهم لمدة أسبوعين من تاريخ التقسيم
+    two_weeks_ago = now_est.date() - datetime.timedelta(days=14)
+    two_weeks_ago_str = two_weeks_ago.strftime("%Y-%m-%d")
+
+    # 🛠️ تنظيف القائمة: الإبقاء على الأسهم التي قسمت خلال الـ 14 يوماً الماضية
     cleaned_watchlist = {}
     for sym, item in watchlist.items():
-        if item.get("added_date") == today_str:
+        if item.get("added_date", "") >= two_weeks_ago_str:
             cleaned_watchlist[sym] = item
     watchlist = cleaned_watchlist
 
-    # 1. جلب تقسيمات اليوم الجديدة وإرسال التقرير
-    splits = get_todays_reverse_splits()
+    # 1. جلب تقسيمات الـ 14 يوماً الماضية كاملة
+    splits = get_recent_reverse_splits(days=14)
     updates = []
 
     for item in splits:
         symbol = item['symbol']
         num = item['num']
         den = item['den']
+        split_date = item['split_date']
 
         tv_data = get_tradingview_stock_data(symbol)
         if not tv_data['is_valid_stock']:
@@ -602,7 +507,13 @@ def run_task():
                 eff_price = current_price
 
             split_open = get_split_candle_open(symbol)
-            base_split_price = split_open if (split_open and split_open > 0) else expected_post_split_price
+            if split_open and split_open > 0:
+                if factor > 1 and abs((split_open * factor) - eff_price) < abs(split_open - eff_price):
+                    base_split_price = split_open * factor
+                else:
+                    base_split_price = split_open
+            else:
+                base_split_price = eff_price
 
             if base_split_price and base_split_price > 0 and eff_price > 0:
                 split_chg = ((eff_price - base_split_price) / base_split_price) * 100
@@ -611,7 +522,7 @@ def run_task():
                 split_candle_change_str = "غير متوفر"
 
             watchlist[symbol] = {
-                "added_date": today_str,
+                "added_date": split_date,
                 "ratio": item['raw_text'],
                 "split_open": base_split_price
             }
@@ -634,10 +545,11 @@ def run_task():
             tv_url = f"https://www.tradingview.com/chart/?symbol={symbol}"
 
             change_pct_str = f"{'+' if change_pct >= 0 else ''}{round(change_pct, 2)}%"
+            date_display = "اليوم" if split_date == today_str else split_date
 
-            # القالب المحدث متضمناً الدولة بعد القطاع والنشاط مباشرة
             info = (
                 f"🔷 <b>${symbol}</b>\n"
+                f"تاريخ التقسيم: <b>{date_display}</b>\n"
                 f"نسبة التقسيم : <b>{html.escape(ratio_ar)}</b>\n"
                 f"السعر الان : <b>{price_curr_display}</b>\n"
                 f"السعر المتوقع للتقسيم: <b>{price_theo_str}</b>\n"
@@ -655,12 +567,9 @@ def run_task():
         msg = "\n\n───────────────\n\n".join(updates)
         send_telegram_message(msg)
 
-    # 2. بطاقة LIVE لأسهم اليوم
+    # 2. إرسال وتحديث بطاقات LIVE لجميع الأسهم خلال أسبوعين من تاريخ التقسيم
     if 4 <= est_hour <= 20:
-        for sym in list(watchlist.keys()):
-            if watchlist[sym].get("added_date") != today_str:
-                continue
-
+        for sym, item_data in list(watchlist.items()):
             snap = get_live_snapshot(sym)
             if not snap:
                 continue
@@ -683,11 +592,11 @@ def run_task():
                 else:
                     trend_word = "غير كافٍ"
 
-            ratio_str = watchlist[sym].get("ratio", "")
-            split_open_saved = watchlist[sym].get("split_open")
+            ratio_str = item_data.get("ratio", "")
+            split_open_saved = item_data.get("split_open")
             card = build_live_card(sym, snap, trend_word, est_time_str, ratio_str, split_open=split_open_saved)
 
-            msg_id = watchlist[sym].get("live_msg_id")
+            msg_id = item_data.get("live_msg_id")
             if msg_id:
                 success = edit_telegram_message(msg_id, card)
                 if not success:
