@@ -283,6 +283,22 @@ def get_prior_splits_count(ticker):
         pass
     return count
 
+def get_split_candle_open(ticker):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+               f"?interval=1m&range=1d&includePrePost=true")
+        res = requests.get(url, headers=headers, timeout=8).json()
+        r = res['chart']['result'][0]
+        q = r['indicators']['quote'][0]
+        opens = q.get('open', [])
+        for o in opens:
+            if o is not None and o > 0:
+                return float(o)
+    except Exception as e:
+        print(f"Split candle open error ({ticker}):", e)
+    return None
+
 def get_3m_candles(ticker, limit=9):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -442,7 +458,7 @@ def get_live_snapshot(ticker):
         print(f"Live snapshot error ({ticker}):", e)
         return None
 
-def build_live_card(sym, snap, trend_word, est_time_str, ratio_str=""):
+def build_live_card(sym, snap, trend_word, est_time_str, ratio_str="", split_open=None):
     tv_url = f"https://www.tradingview.com/chart/?symbol={sym}"
     
     session = snap.get('session', 'REG')
@@ -467,6 +483,12 @@ def build_live_card(sym, snap, trend_word, est_time_str, ratio_str=""):
         hl_str = "—"
         vol_str = "—"
 
+    if split_open and split_open > 0 and snap.get('last') and snap['last'] > 0:
+        split_chg = ((snap['last'] - split_open) / split_open) * 100
+        split_chg_line = f"التغير من شمعة التقسيم: <b>{'+' if split_chg >= 0 else ''}{round(split_chg, 2)}%</b>\n"
+    else:
+        split_chg_line = ""
+
     ratio_line = f"نسبة التقسيم: <b>{html.escape(ratio_str)}</b>\n" if ratio_str else ""
 
     return (
@@ -476,6 +498,7 @@ def build_live_card(sym, snap, trend_word, est_time_str, ratio_str=""):
         f"بداية الجلسة: <b>{open_str}</b>\n"
         f"السعر الآن: <b>{round(snap['last'], 4)}$</b>\n"
         f"التغير للجلسة: <b>{chg_str}</b>\n"
+        f"{split_chg_line}"
         f"الاتجاه (شموع 3د): <b>{trend_word}</b>\n"
         f"أعلى / أدنى بالجلسة: <b>{hl_str}</b>\n"
         f"فوليوم الجلسة: <b>{vol_str}</b>\n"
@@ -511,13 +534,6 @@ def run_task():
             continue
 
         if symbol not in watchlist:
-            watchlist[symbol] = {
-                "added_date": today_str,
-                "ratio": item['raw_text'],
-                "alerted_turnover": False,
-                "alerted_rebound": False
-            }
-
             factor = (den / num) if (num and den and num < den) else 1.0
             current_price = tv_data['price']
             change_pct = tv_data['change_pct']
@@ -526,13 +542,35 @@ def run_task():
                 if current_price >= 1.0:
                     expected_post_split_price = current_price
                     price_curr_display = f"{round(current_price / factor, 4)}$"
+                    eff_price = current_price
                 else:
                     expected_post_split_price = current_price * factor
                     price_curr_display = f"{round(current_price, 4)}$"
+                    eff_price = expected_post_split_price
                 price_theo_str = f"{round(expected_post_split_price, 2)}$"
             else:
                 price_curr_display = f"{round(current_price, 4)}$" if current_price > 0 else "غير متوفر"
                 price_theo_str = "غير متوفر"
+                expected_post_split_price = current_price
+                eff_price = current_price
+
+            # حساب التغير من شمعة التقسيم
+            split_open = get_split_candle_open(symbol)
+            base_split_price = split_open if (split_open and split_open > 0) else expected_post_split_price
+
+            if base_split_price and base_split_price > 0 and eff_price > 0:
+                split_chg = ((eff_price - base_split_price) / base_split_price) * 100
+                split_candle_change_str = f"{'+' if split_chg >= 0 else ''}{round(split_chg, 2)}%"
+            else:
+                split_candle_change_str = "غير متوفر"
+
+            watchlist[symbol] = {
+                "added_date": today_str,
+                "ratio": item['raw_text'],
+                "alerted_turnover": False,
+                "alerted_rebound": False,
+                "split_open": base_split_price
+            }
 
             raw_float = tv_data['raw_float']
             total_shares = tv_data['total_shares']
@@ -560,6 +598,7 @@ def run_task():
                 f"القطاع والنشاط: <b>{html.escape(sector_and_industry)}</b>\n"
                 f"تقسيمات سابقه: ( <b>{prior_splits}</b> )\n"
                 f"التغير الحالي ٪+-: <b>{round(change_pct, 2)}%</b>\n"
+                f"التغير من شمعة التقسيم ٪+-: <b>{split_candle_change_str}</b>\n"
                 f"الشارت: <a href='{tv_url}'>TradingView Chart</a>"
             )
             updates.append(info)
@@ -670,7 +709,8 @@ def run_task():
                     trend_word = "غير كافٍ"
 
             ratio_str = watchlist[sym].get("ratio", "")
-            card = build_live_card(sym, snap, trend_word, est_time_str, ratio_str)
+            split_open_saved = watchlist[sym].get("split_open")
+            card = build_live_card(sym, snap, trend_word, est_time_str, ratio_str, split_open=split_open_saved)
 
             msg_id = watchlist[sym].get("live_msg_id")
             if msg_id:
