@@ -81,11 +81,20 @@ def send_telegram_message(message):
         res = requests.post(url, json=payload, timeout=15)
         if res.ok:
             print("✅ تم إرسال الرسالة بنجاح")
+            time.sleep(1.5)
             return True
+        elif res.status_code == 429:
+            retry_after = res.json().get('parameters', {}).get('retry_after', 5)
+            print(f"⏳ تجاوز الحد المسموح (429)، الانتظار لمدة {retry_after} ثوانٍ...")
+            time.sleep(retry_after + 1)
+            res_retry = requests.post(url, json=payload, timeout=15)
+            time.sleep(1.5)
+            return res_retry.ok
         else:
             print(f"❌ Telegram Error: {res.status_code} - {res.text}")
             clean_text = re.sub(r'<[^>]+>', '', message)
             res_retry = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_text}, timeout=15)
+            time.sleep(1.5)
             return res_retry.ok
     except Exception as e:
         print("❌ استثناء التليجرام:", e)
@@ -103,8 +112,16 @@ def send_telegram_get_id(message):
     }
     try:
         res = requests.post(url, json=payload, timeout=15)
+        time.sleep(1.5)
         if res.ok:
             return res.json()['result']['message_id']
+        elif res.status_code == 429:
+            retry_after = res.json().get('parameters', {}).get('retry_after', 5)
+            time.sleep(retry_after + 1)
+            res_retry = requests.post(url, json=payload, timeout=15)
+            time.sleep(1.5)
+            if res_retry.ok:
+                return res_retry.json()['result']['message_id']
     except Exception as e:
         print("❌ send_telegram_get_id:", e)
     return None
@@ -122,6 +139,13 @@ def edit_telegram_message(message_id, message):
     }
     try:
         res = requests.post(url, json=payload, timeout=15)
+        time.sleep(1.5)
+        if res.status_code == 429:
+            retry_after = res.json().get('parameters', {}).get('retry_after', 5)
+            time.sleep(retry_after + 1)
+            res_retry = requests.post(url, json=payload, timeout=15)
+            time.sleep(1.5)
+            return res_retry.ok
         return res.ok
     except Exception as e:
         print("❌ edit_telegram_message:", e)
@@ -173,14 +197,6 @@ def get_est_now():
 
 def get_ksa_now():
     return datetime.datetime.now(ZoneInfo("Asia/Riyadh"))
-
-def is_market_active():
-    now_est = get_est_now()
-    if now_est.weekday() >= 5:
-        return False
-    if 4 <= now_est.hour < 20:
-        return True
-    return False
 
 def verify_actual_execution(ticker, num, den):
     if not num or not den or num >= den:
@@ -563,7 +579,6 @@ def run_task():
             else:
                 split_candle_change_str = "غير متوفر"
 
-            # الحساب الصحيح والمضبوط للفلوت بعد التقسيم العكسي
             raw_float = tv_data['raw_float']
             total_shares = tv_data['total_shares']
             factor = den / num if num and den and num > 0 else 1.0
