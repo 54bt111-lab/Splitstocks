@@ -81,20 +81,17 @@ def send_telegram_message(message):
         res = requests.post(url, json=payload, timeout=15)
         if res.ok:
             print("✅ تم إرسال الرسالة بنجاح")
-            time.sleep(1.5)
             return True
         elif res.status_code == 429:
-            retry_after = res.json().get('parameters', {}).get('retry_after', 5)
-            print(f"⏳ تجاوز الحد المسموح (429)، الانتظار لمدة {retry_after} ثوانٍ...")
+            retry_after = res.json().get('parameters', {}).get('retry_after', 3)
+            print(f"⏳ تجاوز الحد (429)، انتظار {retry_after} ثوانٍ...")
             time.sleep(retry_after + 1)
             res_retry = requests.post(url, json=payload, timeout=15)
-            time.sleep(1.5)
             return res_retry.ok
         else:
             print(f"❌ Telegram Error: {res.status_code} - {res.text}")
             clean_text = re.sub(r'<[^>]+>', '', message)
             res_retry = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": clean_text}, timeout=15)
-            time.sleep(1.5)
             return res_retry.ok
     except Exception as e:
         print("❌ استثناء التليجرام:", e)
@@ -112,16 +109,8 @@ def send_telegram_get_id(message):
     }
     try:
         res = requests.post(url, json=payload, timeout=15)
-        time.sleep(1.5)
         if res.ok:
             return res.json()['result']['message_id']
-        elif res.status_code == 429:
-            retry_after = res.json().get('parameters', {}).get('retry_after', 5)
-            time.sleep(retry_after + 1)
-            res_retry = requests.post(url, json=payload, timeout=15)
-            time.sleep(1.5)
-            if res_retry.ok:
-                return res_retry.json()['result']['message_id']
     except Exception as e:
         print("❌ send_telegram_get_id:", e)
     return None
@@ -139,13 +128,6 @@ def edit_telegram_message(message_id, message):
     }
     try:
         res = requests.post(url, json=payload, timeout=15)
-        time.sleep(1.5)
-        if res.status_code == 429:
-            retry_after = res.json().get('parameters', {}).get('retry_after', 5)
-            time.sleep(retry_after + 1)
-            res_retry = requests.post(url, json=payload, timeout=15)
-            time.sleep(1.5)
-            return res_retry.ok
         return res.ok
     except Exception as e:
         print("❌ edit_telegram_message:", e)
@@ -579,19 +561,18 @@ def run_task():
             else:
                 split_candle_change_str = "غير متوفر"
 
+            # الحساب الحقيقي والدقيق للفلوت بعد التقسيم العكسي
             raw_float = tv_data['raw_float']
             total_shares = tv_data['total_shares']
             factor = den / num if num and den and num > 0 else 1.0
 
-            if raw_float > 0 and factor > 1:
-                adjusted_float = raw_float / factor
+            # الاعتماد على إجمالي الأسهم مقسوماً على معامل التقسيم للحصول على الفلوت الحقيقي والصحيح
+            if total_shares > 0 and factor > 1:
+                base_shares = total_shares / factor
+            elif raw_float > 0 and factor > 1:
+                base_shares = raw_float / factor
             else:
-                adjusted_float = raw_float
-
-            if adjusted_float > 0 and total_shares > 0 and adjusted_float > total_shares:
-                base_shares = total_shares / factor if total_shares > factor else total_shares
-            else:
-                base_shares = adjusted_float if adjusted_float > 0 else (total_shares / factor if total_shares > 0 and factor > 1 else total_shares)
+                base_shares = raw_float if raw_float > 0 else total_shares
 
             if base_shares <= 0 and tv_data['market_cap'] > 0 and current_price > 0:
                 base_shares = tv_data['market_cap'] / current_price
