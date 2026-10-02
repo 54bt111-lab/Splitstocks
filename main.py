@@ -687,16 +687,8 @@ def run_task():
     print("=" * 50)
 
 if __name__ == "__main__":
-    print("🔄 تم تشغيل السكربت بنظام الفحص الذكي لأوقات التداول (US Market Hours)...")
-    while True:
-        try:
-            if is_market_active():
-                run_task()
-                time.sleep(180)
-            else:
-                now_ksa = get_ksa_now()
-                print(f"😴 السوق مغلق حالياً ({now_ksa.strftime('%Y-%m-%d %H:%M:%S')} بتوقيت السعودية). انتظار 15 دقيقة قبل الفحص التالي...")
-                time.sleep(900)
-        except Exception as e:
-            print(f"❌ حدث خطأ غير متوقع: {e}")
-            time.sleep(180)
+    print("🔄 تم تشغيل السكربت وبدء التنفيذ الفوري...")
+    try:
+        run_task()
+    except Exception as e:
+        print(f"❌ حدث خطأ غير متوقع أثناء التنفيذ: {e}")
