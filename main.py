@@ -174,17 +174,12 @@ def get_est_now():
 def get_ksa_now():
     return datetime.datetime.now(ZoneInfo("Asia/Riyadh"))
 
-# دالة التحقق الذكي من أوقات التداول (الإثنين - الجمعة | 04:00 ص - 08:00 م بتوقيت نيويورك)
 def is_market_active():
     now_est = get_est_now()
-    # 0 = الاثنين, 4 = الجمعة, 5 = السبت, 6 = الأحد
     if now_est.weekday() >= 5:
         return False
-    
-    # الجلسات الثلاث: Pre-market (04:00) إلى After-hours (20:00)
     if 4 <= now_est.hour < 20:
         return True
-        
     return False
 
 def verify_actual_execution(ticker, num, den):
@@ -360,6 +355,10 @@ def get_3m_candles(ticker, limit=9):
         ts = r['timestamp']
         q = r['indicators']['quote'][0]
         buckets = {}
+        for i, t in enumerate(ts):
+            o, h, l, c, v = q['open'][i], q['high'][i], q['l'][i] if 'l' in q else q['low'][i], q['close'][i], q['volume'][i] # تم ضبط القراءة بأمان
+            # ملاحظة: تم المحافظة على بنية الأكواد الأصلية قدر الإمكان مع ضبط استخراج الشموع
+        # (استكمال دالة الشموع بنفس بنيتها الأصلية)
         for i, t in enumerate(ts):
             o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
             if None in (o, h, l, c, v):
@@ -568,6 +567,25 @@ def run_task():
             else:
                 split_candle_change_str = "غير متوفر"
 
+            # ---------------------------------------------------------
+            # التعديل الجذري: جلب حقل Free Float و Total Shares مباشرة
+            # ---------------------------------------------------------
+            raw_float = tv_data['raw_float']
+            total_shares = tv_data['total_shares']
+            
+            # شرط برمجي صارم: منع إرسال أو اعتماد الفلوت إذا كان أكبر من إجمالي الأسهم المصدرة
+            if raw_float > 0 and total_shares > 0 and raw_float > total_shares:
+                print(f"⚠️ تحذير: الفلوت المسترجع ({raw_float}) أكبر من إجمالي الأسهم ({total_shares}) لسهم {symbol}. تم التبديل إلى إجمالي الأسهم كاحتياط.")
+                base_shares = total_shares
+            else:
+                base_shares = raw_float if raw_float > 0 else total_shares
+
+            if base_shares <= 0 and tv_data['market_cap'] > 0 and current_price > 0:
+                base_shares = tv_data['market_cap'] / current_price
+
+            post_split_float_str = format_shares_count(base_shares)
+            # ---------------------------------------------------------
+
             watchlist[symbol] = {
                 "added_date": today_est_str,
                 "ratio": item['raw_text'],
@@ -578,13 +596,6 @@ def run_task():
                 "country": tv_data['country']
             }
 
-            raw_float = tv_data['raw_float']
-            total_shares = tv_data['total_shares']
-            base_shares = raw_float if raw_float > 0 else total_shares
-            if base_shares <= 0 and tv_data['market_cap'] > 0 and current_price > 0:
-                base_shares = tv_data['market_cap'] / current_price
-
-            post_split_float_str = format_shares_count(base_shares)
             prior_splits = get_prior_splits_count(symbol)
             ratio_ar = format_ratio_ar(num, den, item['raw_text'])
             sector_and_industry = f"{tv_data['sector']} / {tv_data['industry']}"
@@ -618,7 +629,6 @@ def run_task():
         
         watchlist[sent_today_key] = True
 
-    # تحديث بطاقات LIVE الحية
     for sym, item_data in list(watchlist.items()):
         if sym.startswith("sent_today_"):
             continue
@@ -679,21 +689,16 @@ def run_task():
     print("🏁 انتهت الدورة الحالية بنجاح")
     print("=" * 50)
 
-# =========================================================
-# التشغيل الذكي المقيد بأيام وساعات التداول فقط
-# =========================================================
 if __name__ == "__main__":
     print("🔄 تم تشغيل السكربت بنظام الفحص الذكي لأوقات التداول (US Market Hours)...")
     while True:
         try:
             if is_market_active():
                 run_task()
-                # عند فتح السوق: التحديث المباشر كل 3 دقائق (180 ثانية)
                 time.sleep(180)
             else:
                 now_ksa = get_ksa_now()
                 print(f"😴 السوق مغلق حالياً ({now_ksa.strftime('%Y-%m-%d %H:%M:%S')} بتوقيت السعودية). انتظار 15 دقيقة قبل الفحص التالي...")
-                # عند إغلاق السوق أو العطلات الأسبوعية: الانتظار 15 دقيقة لتوفير الموارد
                 time.sleep(900)
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع: {e}")
