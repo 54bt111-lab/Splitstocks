@@ -180,36 +180,6 @@ def get_est_now():
 def get_ksa_now():
     return datetime.datetime.now(ZoneInfo("Asia/Riyadh"))
 
-def verify_actual_execution(ticker, num, den):
-    if not num or not den or num >= den:
-        return False, 1.0, 0.0, 0.0
-    
-    factor = den / num
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d&includePrePost=true"
-        res = requests.get(url, headers=headers, timeout=8).json()
-        result = res.get('chart', {}).get('result', [])
-        if not result:
-            return False, factor, 0.0, 0.0
-
-        meta = result[0].get('meta', {})
-        prev_close = meta.get('previousClose') or meta.get('chartPreviousClose') or 0.0
-        current_price = meta.get('regularMarketPrice') or meta.get('preMarketPrice') or 0.0
-
-        if prev_close <= 0 or current_price <= 0:
-            return False, factor, current_price, prev_close
-
-        expected_price = prev_close * factor
-        if current_price < (prev_close * (factor * 0.5)) and current_price < 1.0:
-            print(f"🚫 [استبعاد كاذب] {ticker}: المعلن تقسيم 1:{factor} ولكن السعر بالسوق ${current_price} لم يرتفع إلى المتوقع ${round(expected_price, 2)}")
-            return False, factor, current_price, prev_close
-
-        return True, factor, current_price, prev_close
-    except Exception as e:
-        print(f"⚠️ خطأ أثناء التحقق الفعلي لسهم {ticker}: {e}")
-        return False, factor, 0.0, 0.0
-
 def get_today_reverse_splits():
     today_est = get_est_now().date()
     date_str = today_est.strftime("%Y-%m-%d")
@@ -218,41 +188,44 @@ def get_today_reverse_splits():
     try:
         url = f"https://api.nasdaq.com/api/calendar/splits?date={date_str}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
             "Origin": "https://www.nasdaq.com",
             "Referer": "https://www.nasdaq.com/"
         }
         res = requests.get(url, headers=headers, timeout=10)
+        print(f"📡 Nasdaq API Status: {res.status_code}")
         if res.status_code == 200:
-            rows = (res.json() or {}).get('data', {}).get('rows') or []
+            data_json = res.json() or {}
+            rows = data_json.get('data', {}).get('rows') or []
+            print(f"📊 إجمالي النتائج الواردة من ناسداك: {len(rows)}")
             for row in rows:
                 if not row:
                     continue
                 symbol = str(row.get('symbol', '')).strip().upper()
                 ratio_str = str(row.get('ratio', ''))
-                num, den = extract_ratio_numbers(ratio_str)
+                print(f"🔍 فحص السهم: {symbol} - النسبة: {ratio_str}")
                 
+                num, den = extract_ratio_numbers(ratio_str)
                 is_reverse = False
                 if num is not None and den is not None and num < den:
                     is_reverse = True
                 if "reverse" in ratio_str.lower() or "1 for" in ratio_str.lower() or "1-for" in ratio_str.lower():
                     is_reverse = True
                 
-                if symbol and is_reverse and symbol not in splits_dict:
-                    is_executed, factor, curr_p, prev_p = verify_actual_execution(symbol, num, den)
-                    if is_executed:
-                        splits_dict[symbol] = {
-                            'symbol': symbol,
-                            'num': num,
-                            'den': den,
-                            'raw_text': ratio_str,
-                            'split_date': date_str,
-                            'factor': factor
-                        }
-                    else:
-                        print(f"❌ تم استبعاد {symbol} لعدم تنفيذ التقسيم بالسوق اليوم.")
+                if symbol and (is_reverse or (num and den and num < den)):
+                    factor = den / num if (num and num > 0) else 1.0
+                    splits_dict[symbol] = {
+                        'symbol': symbol,
+                        'num': num if num else 1,
+                        'den': den if den else factor,
+                        'raw_text': ratio_str,
+                        'split_date': date_str,
+                        'factor': factor
+                    }
+                    print(f"✅ تم اعتماد السهم للتقسيم العكسي: {symbol}")
+                else:
+                    print(f"⚠️ تم تخطي السهم لعدم استيفاء شرط التقسيم العكسي: {symbol} ({ratio_str})")
     except Exception as e:
         print(f"❌ Nasdaq API Error ({date_str}):", e)
 
@@ -330,8 +303,7 @@ def get_prior_splits_count(ticker):
 def get_split_candle_open(ticker):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-               f"?interval=1m&range=1d&includePrePost=true")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d&includePrePost=true"
         res = requests.get(url, headers=headers, timeout=8).json()
         r = res['chart']['result'][0]
         q = r['indicators']['quote'][0]
@@ -346,8 +318,7 @@ def get_split_candle_open(ticker):
 def get_3m_candles(ticker, limit=9):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-               f"?interval=1m&range=1d&includePrePost=true")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d&includePrePost=true"
         res = requests.get(url, headers=headers, timeout=8).json()
         r = res['chart']['result'][0]
         ts = r['timestamp']
@@ -398,8 +369,7 @@ def analyze_3m_trend(ticker):
 def get_live_snapshot(ticker):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-               f"?interval=1m&range=1d&includePrePost=true")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d&includePrePost=true"
         res = requests.get(url, headers=headers, timeout=8).json()
         r = res['chart']['result'][0]
         meta = r.get('meta', {})
@@ -411,28 +381,24 @@ def get_live_snapshot(ticker):
         
         ts = r.get('timestamp', [])
         q = r['indicators']['quote'][0]
-        
         now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
         
         if now_ts < reg_start:
             session_type = "PRE"
             target_start = periods.get('pre', {}).get('start', 0)
-            base_price = meta.get('previousClose') or meta.get('chartPreviousClose')
             official_vol = meta.get('preMarketVolume') or meta.get('regularMarketVolume') or 0
         elif reg_start <= now_ts < reg_end:
             session_type = "REG"
             target_start = reg_start
-            base_price = meta.get('previousClose') or meta.get('chartPreviousClose')
             official_vol = meta.get('regularMarketVolume') or 0
         else:
             session_type = "AH"
             target_start = post_start
-            base_price = meta.get('regularMarketPrice') or meta.get('previousClose')
             official_vol = meta.get('postMarketVolume') or meta.get('regularMarketVolume') or 0
 
         snap = {
             'session': session_type, 'open': None, 'last': meta.get('regularMarketPrice'),
-            'high': None, 'low': None, 'vol': official_vol, 'base_price': base_price
+            'high': None, 'low': None, 'vol': official_vol, 'base_price': meta.get('previousClose') or meta.get('chartPreviousClose')
         }
 
         calc_vol = 0.0
@@ -440,7 +406,6 @@ def get_live_snapshot(ticker):
             o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
             if None in (o, h, l, c, v):
                 continue
-            
             snap['last'] = c
             if t >= target_start:
                 if snap['open'] is None: snap['open'] = o
@@ -548,6 +513,7 @@ def run_task():
 
             tv_data = get_tradingview_stock_data(symbol)
             if not tv_data['is_valid_stock']:
+                print(f"⚠️ السهم {symbol} غير صالح أو يعتبر ETF/صندوق.")
                 continue
 
             current_price = tv_data['price']
@@ -561,12 +527,11 @@ def run_task():
             else:
                 split_candle_change_str = "غير متوفر"
 
-            # الحساب الحقيقي والدقيق للفلوت بعد التقسيم العكسي
+            # حساب فلوت حقيقي ودقيق بعد التقسيم العكسي
             raw_float = tv_data['raw_float']
             total_shares = tv_data['total_shares']
             factor = den / num if num and den and num > 0 else 1.0
 
-            # الاعتماد على إجمالي الأسهم مقسوماً على معامل التقسيم للحصول على الفلوت الحقيقي والصحيح
             if total_shares > 0 and factor > 1:
                 base_shares = total_shares / factor
             elif raw_float > 0 and factor > 1:
@@ -617,8 +582,8 @@ def run_task():
             send_telegram_message(msg)
             print(f"✅ تم إرسال الأسهم المؤكدة ({len(updates)} أسهم)")
         else:
-            send_telegram_message(f"📌 <b>أسهم التقسيم العكسي — اليوم ({ksa_date_str})</b>\n\nلا توجد تقسيمات عكسية مؤكدة ومطبقة فعلياً في البورصة حتى الآن.")
-            print("ℹ️ لا توجد تقسيمات مؤكدة اليوم")
+            send_telegram_message(f"📌 <b>أسهم التقسيم العكسي — اليوم ({ksa_date_str})</b>\n\nلا توجد تقسيمات عكسية مطبقة في البورصة أو استوف الشروط حتى الآن.")
+            print("ℹ️ لا توجد تقسيمات مطابقة معتمدة اليوم")
         
         watchlist[sent_today_key] = True
 
