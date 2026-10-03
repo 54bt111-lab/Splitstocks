@@ -1,4 +1,3 @@
-
 import os
 import sys
 import json
@@ -321,6 +320,87 @@ def get_tradingview_stock_data(ticker):
 
     return data
 
+# ===== إضافة: لقطة الفلوت قبل يوم التقسيم + المقارنة =====
+PRESPLIT_FILE = "presplit_floats.json"
+
+def load_presplit():
+    if os.path.exists(PRESPLIT_FILE):
+        try:
+            with open(PRESPLIT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_presplit(data):
+    with open(PRESPLIT_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def get_base_shares(tv_data, price):
+    base = tv_data['raw_float'] if tv_data['raw_float'] > 0 else tv_data['total_shares']
+    if base <= 0 and tv_data['market_cap'] > 0 and price > 0:
+        base = tv_data['market_cap'] / price
+    return base
+
+def snapshot_next_day_floats():
+    # يحفظ فلوت أسهم التقسيم العكسي لأول يوم تداول قادم قبل أن يتحدث المزوّد
+    now_est = get_est_now()
+    next_day = now_est.date() + datetime.timedelta(days=1)
+    while next_day.weekday() >= 5:
+        next_day += datetime.timedelta(days=1)
+    date_str = next_day.strftime("%Y-%m-%d")
+
+    store = load_presplit()
+    done_key = f"_done_{date_str}"
+    if store.get(done_key):
+        return
+
+    try:
+        url = f"https://api.nasdaq.com/api/calendar/splits?date={date_str}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.nasdaq.com",
+            "Referer": "https://www.nasdaq.com/"
+        }
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            return
+        rows = (res.json() or {}).get('data', {}).get('rows') or []
+        for row in rows:
+            if not row:
+                continue
+            symbol = str(row.get('symbol', '')).strip().upper()
+            num, den = extract_ratio_numbers(str(row.get('ratio', '')))
+            if not symbol or num is None or den is None or num >= den:
+                continue
+            tv = get_tradingview_stock_data(symbol)
+            if not tv['is_valid_stock']:
+                continue
+            base = get_base_shares(tv, tv['price'])
+            if base > 0:
+                store[symbol] = {"date": date_str, "pre_float": base}
+        store[done_key] = True
+        save_presplit(store)
+    except Exception as e:
+        print("snapshot_next_day_floats error:", e)
+
+def resolve_post_split_float(symbol, current_base, factor):
+    if current_base <= 0:
+        return 0.0
+    if not factor or factor <= 1:
+        return current_base
+
+    pre = load_presplit().get(symbol, {}).get("pre_float", 0.0)
+    if pre > 0:
+        expected = pre / factor
+        if abs(current_base - expected) / expected <= 0.30:
+            return current_base      # المصدر قسم بالفعل
+        return expected              # المصدر لم يقسم: نجري القسمة
+    # لا توجد لقطة سابقة: نفترض أن المصدر لم يحدّث
+    return current_base / factor
+# ===== نهاية الإضافة =====
+
 def get_prior_splits_count(ticker):
     headers = {"User-Agent": "Mozilla/5.0"}
     count = 0
@@ -546,6 +626,7 @@ def run_task():
     watchlist = cleaned_watchlist
 
     splits = get_today_reverse_splits()
+    snapshot_next_day_floats()
 
     if not watchlist.get(sent_today_key):
         updates = []
@@ -581,9 +662,9 @@ def run_task():
 
             raw_float = tv_data['raw_float']
             total_shares = tv_data['total_shares']
-            base_shares = raw_float if raw_float > 0 else total_shares
-            if base_shares <= 0 and tv_data['market_cap'] > 0 and current_price > 0:
-                base_shares = tv_data['market_cap'] / current_price
+            base_shares = resolve_post_split_float(
+                symbol, get_base_shares(tv_data, current_price), item.get('factor', 1.0)
+            )
 
             post_split_float_str = format_shares_count(base_shares)
             prior_splits = get_prior_splits_count(symbol)
